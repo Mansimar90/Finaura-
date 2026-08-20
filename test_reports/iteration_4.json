@@ -1,0 +1,41 @@
+{
+  "summary": "Re-test of Phase 2 auth stack after iteration_3 fixes. Backend: pytest /app/backend/tests/test_auth_phase2.py now 33/33 PASS (was 30/32). Both previously failing lockout tests pass: 6th wrong-password login returns 429 (first 5 -> 401) and 6th wrong PIN returns 429 with 'PIN locked...' message — no more naive/aware datetime 500s. Login lockout is now keyed on 'email:<email>' so it accumulates deterministically behind the ingress. Added a new test asserting demo-seed goal/transaction ids are valid uuid4 and do not collide across two fresh users (verified, no 'goal-1'/'txn-1' ids). Regression suite still green: public /api/demo/overview, /api/financial/overview user scoping, multi-tenant isolation (B gets 404 on A's goal/txn), profile update, delete-data scoping, chat streaming anon + authed, OAuth 503s, forgot/reset/verify-email, PIN set/verify/remove. Frontend (Playwright, 1920x1080): (1) testuser@finaura.dev/testpass123 now lands directly on Dashboard (no /lock) — PIN cleared; (2) dashboard eyebrow shows the real current date 'Thursday, 20 August 2026'; (3) New-goal modal exposes name/target/current/deadline/priority/monthly — created 'Trip to Japan' 200000/25000/2029/High/8000 and the card renders exactly those values; (4) Ask Finaura shows the user question as a right-aligned bubble and the streamed assistant reply left-aligned, and a second message preserves history (2 user + 2 assistant bubbles); (5) Settings 'Delete my financial data' -> success message and sidebar pill flips 'Demo data loaded' -> 'Your data' without reload (refreshMe works); (6) full new-user smoke: signup -> /onboarding -> 'Load sample data' -> /set-pin (1234 twice) -> Dashboard with 3 goals + 6 transactions; sign out -> sign in -> /lock -> wrong PIN shows 'Incorrect PIN. 4 attempts left.' -> 1234 -> Dashboard; (7) /demo public: 'Sign up to save' in Goals modal -> /signup, demo banner 'Create account' -> /signup. No console errors, no backend 500s in backend.err.log during the run.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/auth/config", "issue": "Still returns google_client_id / apple_client_id / apple_redirect_uri unconditionally; prefer exposing only the *_enabled booleans (carried over from iteration 3, not blocking)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Dashboard greeting", "issue": "Greeting is always 'Good morning, <First>' regardless of the local time, and for a user named 'TEST Smoke2' it renders the raw first token ('Good morning, TEST.'). Cosmetic.", "selector": ".welcome h2", "priority": "LOW"},
+      {"component": "My Finances", "issue": "Cash savings / Investments / Loans & debt / Monthly EMI show the same static values (5,00,000 / 2,50,000 / 1,20,000 / 18,000) for a brand-new user who only loaded demo data — verify these are intended demo constants rather than real per-user fields.", "selector": "nav-my-finances page metric cards", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Mobile (390px) demo dashboard", "issues": ["Carried over from iteration 3 (not re-verified this run): demo banner 'Sign in' label wraps inside the pill."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_auth_phase2.py", "/app/test_reports/pytest/phase2_iter4.xml"],
+  "action_items": [
+    "No blocking issues. Optionally trim GET /api/auth/config to the *_enabled booleans.",
+    "Optional polish: time-of-day aware greeting on the dashboard."
+  ],
+  "critical_code_review_comments": [
+    "/app/frontend/src/App.js is now 815 lines and still contains Shell, Dashboard, Finances, Statements, Goals, Ask, Settings and routing — exceeds the 700-line guideline; split into per-page modules.",
+    "auth.py onboard() still does an in-handler `from server import DEFAULT_GOALS, TRANSACTIONS` (circular-import shim); move the demo fixtures to a shared module.",
+    "auth.py _as_aware() correctly normalises Mongo datetimes; keep using it for any future datetime comparison (client is now tz_aware=True as well).",
+    "Goal cards previously had no data-testid — added goal-card-{id} / goal-card-name-{id} / goal-card-amount-{id} and made Card forward extra props."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_auth_phase2.py (txn PATCH test now resolves the real uuid txn id instead of hardcoded 'txn-1'; added TestOnboarding::test_demo_seed_ids_are_unique_uuid4_per_user)",
+    "/app/frontend/src/App.js (Card forwards ...rest props; added data-testid to goal cards)"
+  ],
+  "success_rate": {"backend": "100% (33/33 pytest cases)", "frontend": "100% of requested flows passed (2 cosmetic observations)"},
+  "seed_data_creation": "3 throwaway UI users TEST_ui*@qa.finaura.dev plus pytest TEST_* users — all removed afterwards (DB back to 1 user). testuser@finaura.dev financial data was deleted by the Settings delete-data test and then restored via POST /api/auth/onboard {choice:'demo'} (3 goals + 6 txns, uuid ids). Its PIN remains unset.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "testuser@finaura.dev / testpass123 — no PIN, lands straight on Dashboard; demo data re-seeded after testing.",
+  "context_for_next_testing_agent": "Run `pytest /app/backend/tests/test_auth_phase2.py -q -p no:randomly` — expect 33/33. Lockout docs live in db.login_attempts keyed 'email:<email>'; delete the doc if a test email gets stuck at 429. Demo seed ids are uuid4 now, so never hardcode goal-1/txn-1 in tests. Sidebar nav testids are derived from labels: nav-goals-and-priorities, nav-settings-and-privacy, nav-my-finances, nav-statements, nav-ask-finaura. Transactions table lives on the Statements page (not My Finances). Chat replies take ~8-12s.",
+  "rca_of_the_issue": "Iteration 3's two HIGH bugs are resolved: Motor client is created with tz_aware=True and auth.py normalises datetimes via _as_aware(), so the lockout branches raise HTTPException 429 instead of a TypeError-driven 500; the login limiter key changed from '<podIP>:<email>' to 'email:<email>', making the 5-attempt threshold replica-independent. The single pytest failure seen at the start of this run was a stale test expectation (hardcoded 'txn-1') caused by the intentional uuid4 seeding change — fixed in the test, not the app."
+}

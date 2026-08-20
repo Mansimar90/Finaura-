@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="0" tests="32" time="20.330" timestamp="2026-08-20T07:51:21.108230+00:00" hostname="agent-env-ec3cab9d-296d-431e-a21d-37896209ec78"><testcase classname="tests.test_auth_phase2.TestPin" name="test_set_verify_remove_pin" time="3.175" /><testcase classname="tests.test_auth_phase2.TestRegisterLogin" name="test_register_returns_jwt_and_user" time="1.356" /><testcase classname="tests.test_auth_phase2.TestRegisterLogin" name="test_duplicate_register_409" time="0.812" /><testcase classname="tests.test_auth_phase2.TestRegisterLogin" name="test_register_weak_password_422" time="0.054" /><testcase classname="tests.test_auth_phase2.TestRegisterLogin" name="test_login_success_and_me" time="1.050" /><testcase classname="tests.test_auth_phase2.TestPin" name="test_pin_hash_is_bcrypt" time="0.928" /><testcase classname="tests.test_auth_phase2.TestRegisterLogin" name="test_login_wrong_password_401" time="1.007" /><testcase classname="tests.test_auth_phase2.TestPin" name="test_pin_validation_rejects_non_4_digit" time="1.054" /><testcase classname="tests.test_auth_phase2.TestRegisterLogin" name="test_me_without_token_401" time="0.229" /><testcase classname="tests.test_auth_phase2.TestRegisterLogin" name="test_me_bad_token_401" time="0.072" /><testcase classname="tests.test_auth_phase2.TestRegisterLogin" name="test_bruteforce_lockout_429" time="2.550"><failure message="AssertionError: expected lockout, got 401 {&quot;detail&quot;:&quot;Invalid email or password.&quot;}&#10;assert 401 == 429&#10; +  where 401 = &lt;Response [401]&gt;.status_code">self = &lt;test_auth_phase2.TestRegisterLogin object at 0xfa348b4cfb10&gt;
+s = &lt;requests.sessions.Session object at 0xfa348b386f90&gt;
+created_tokens = ['eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2YTg2YjFmYjVjYjZkMWY5OTFlMGY2N2IiLCJlbWFpbCI6InRlc3RfdV9jMzAwYTQyNDA...GV2IiwiaWF0IjoxNzg3MjEyMjg2LCJleHAiOjE3ODc4MTcwODYsInR5cGUiOiJhY2Nlc3MifQ.MU2lxdw6fdTkYkKDMSW2YDTZBJIwOCbyfaPgHKVnO8Q']
+
+    def test_bruteforce_lockout_429(self, s, created_tokens):
+        email, _ = register(s, created_tokens, name="TEST Lock")
+        codes = []
+        for _ in range(5):
+            codes.append(s.post(f"{BASE}/auth/login", json={"email": email, "password": "Nope12345"}, timeout=30).status_code)
+        assert codes == [401] * 5, codes
+        r = s.post(f"{BASE}/auth/login", json={"email": email, "password": "Nope12345"}, timeout=30)
+        # BUG: returns 500 (naive vs aware datetime compare in check_login_lockout) instead of 429
+&gt;       assert r.status_code == 429, f"expected lockout, got {r.status_code} {r.text[:200]}"
+E       AssertionError: expected lockout, got 401 {"detail":"Invalid email or password."}
+E       assert 401 == 429
+E        +  where 401 = &lt;Response [401]&gt;.status_code
+
+tests/test_auth_phase2.py:118: AssertionError</failure></testcase><testcase classname="tests.test_auth_phase2.TestPin" name="test_verify_pin_without_pin_set_400" time="0.537" /><testcase classname="tests.test_auth_phase2.TestPin" name="test_set_pin_requires_auth" time="0.228" /><testcase classname="tests.test_auth_phase2.TestPin" name="test_pin_lockout_after_5_failures" time="2.833"><failure message="AssertionError: expected 429 lockout, got 500 Internal Server Error&#10;assert 500 == 429&#10; +  where 500 = &lt;Response [500]&gt;.status_code">self = &lt;test_auth_phase2.TestPin object at 0xf85ca8fd7490&gt;
+s = &lt;requests.sessions.Session object at 0xf85ca92322d0&gt;
+created_tokens = ['eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2YTg2YjFmYjVjYjZkMWY5OTFlMGY2N2EiLCJlbWFpbCI6InRlc3RfdV9jYTY3NWJkNTF...GV2IiwiaWF0IjoxNzg3MjEyMjg4LCJleHAiOjE3ODc4MTcwODgsInR5cGUiOiJhY2Nlc3MifQ.JxKXkShQ9fHrEdzyQ71WGQJ4UJxMku5gg0AZQxmiv5I']
+
+    def test_pin_lockout_after_5_failures(self, s, created_tokens):
+        _, data = register(s, created_tokens)
+        h = {"Authorization": f"Bearer {data['access_token']}"}
+        s.post(f"{BASE}/auth/set-pin", json={"pin": "1111"}, headers=h, timeout=30)
+        codes = [s.post(f"{BASE}/auth/verify-pin", json={"pin": "2222"}, headers=h, timeout=30).status_code for _ in range(5)]
+        assert codes == [401] * 5, codes
+        r = s.post(f"{BASE}/auth/verify-pin", json={"pin": "1111"}, headers=h, timeout=30)
+&gt;       assert r.status_code == 429, f"expected 429 lockout, got {r.status_code} {r.text[:200]}"
+E       AssertionError: expected 429 lockout, got 500 Internal Server Error
+E       assert 500 == 429
+E        +  where 500 = &lt;Response [500]&gt;.status_code
+
+tests/test_auth_phase2.py:251: AssertionError</failure></testcase><testcase classname="tests.test_auth_phase2.TestRegisterLogin" name="test_bcrypt_hash_format" time="0.174" /><testcase classname="tests.test_auth_phase2.TestPasswordReset" name="test_forgot_password_generic_unknown_email" time="0.116" /><testcase classname="tests.test_auth_phase2.TestPasswordReset" name="test_forgot_password_existing_user" time="1.043" /><testcase classname="tests.test_auth_phase2.TestPasswordReset" name="test_reset_password_invalid_token_400" time="0.225" /><testcase classname="tests.test_auth_phase2.TestPasswordReset" name="test_verify_email_invalid_token_400" time="0.041" /><testcase classname="tests.test_auth_phase2.TestPasswordReset" name="test_reset_password_full_flow" time="0.356" /><testcase classname="tests.test_auth_phase2.TestOAuthNotConfigured" name="test_google_503" time="0.231" /><testcase classname="tests.test_auth_phase2.TestOAuthNotConfigured" name="test_apple_503" time="0.076" /><testcase classname="tests.test_auth_phase2.TestPublicDemo" name="test_demo_overview_public" time="0.036" /><testcase classname="tests.test_auth_phase2.TestOnboarding" name="test_onboard_demo_seeds_data" time="0.684" /><testcase classname="tests.test_auth_phase2.TestPublicDemo" name="test_protected_endpoints_require_auth" time="0.378" /><testcase classname="tests.test_auth_phase2.TestMultiTenancy" name="test_isolation_and_crud" time="3.514" /><testcase classname="tests.test_auth_phase2.TestOnboarding" name="test_onboard_empty_no_data" time="0.593" /><testcase classname="tests.test_auth_phase2.TestChat" name="test_chat_demo_anonymous" time="4.748" /><testcase classname="tests.test_auth_phase2.TestMultiTenancy" name="test_delete_nonexistent_goal_404" time="0.361" /><testcase classname="tests.test_auth_phase2.TestConfig" name="test_auth_config_not_configured" time="0.757" /><testcase classname="tests.test_auth_phase2.TestChat" name="test_chat_authenticated" time="3.144" /><testcase classname="tests.test_auth_phase2.TestSeededUser" name="test_known_test_user_login" time="1.020" /></testsuite></testsuites>

@@ -1,58 +1,43 @@
-# Finaura Product Requirements Document
+# Finaura — Product Requirements Document
 
-## Original Problem Statement
-Build Finaura — AI-Powered Personal Financial Intelligence Platform: a premium, clickable MVP that transforms manually entered or uploaded fictional financial information into a clear view of financial health, spending, goals, changes, and personalized financial education, without requiring bank-account connections. Include Dashboard, My Finances, Statements, Six-Month Analysis, Goals & Priorities, Financial Changes, Finaura Learn, Ask Finaura, Settings & Privacy, Aarav Sharma demo data, live contextual AI, persistence, and prototype privacy controls.
+## Original problem statement
+Finaura is an AI-powered personal financial intelligence platform that helps users understand and organize their complete financial life without connecting a bank account. Users provide data manually or via uploaded statements. The five MVP features: (1) Personal Financial Life Dashboard, (2) Statement Reader & Segregation, (3) Goals & Priorities, (4) Financial Change & Trend Analysis, (5) Personalized Finaura Learn. Plus Ask Finaura AI chat and privacy controls.
 
-## Architecture Decisions
-- React frontend with BrowserRouter, Recharts, Lucide icons, and CSS variables matching the warm ivory / charcoal / mint design system.
-- FastAPI backend with MongoDB via the protected MONGO_URL; financial overview, goals, transaction edits, delete-data, and streaming chat endpoints are under /api.
-- Demo data is seeded in-memory with persisted goals and transactions initialized in MongoDB on first overview read. MongoDB responses exclude _id.
-- Ask Finaura uses server-side emergentintegrations streaming with the configured EMERGENT_LLM_KEY and an educational-only system prompt.
-- The UI is intentionally labeled Demo Data and prototype privacy/security language avoids production security claims.
+## User personas
+- **New user**: Signs up with email + password (or Google/Apple). Starts with empty profile; can optionally load demo data. Sets a 4-digit PIN for app lock.
+- **Returning user**: Signs in and unlocks with PIN if configured.
+- **Guest / prospect**: Explores `/demo` publicly to see Finaura in action before signing up.
 
-## User Personas
-- Aarav Sharma: a 29-year-old product designer who wants a calm, complete picture of money without connecting a bank account.
-- Future privacy-conscious users who manually provide statements, review categorization, and use education to make better-informed decisions.
+## Architecture
+- Backend: FastAPI (`server.py` + `auth.py` + `email_service.py`), MongoDB (motor async), Bearer JWT auth.
+- Frontend: React 19 + React Router 7, Recharts, lucide-react. Auth pages under `src/pages/`, auth context under `src/lib/auth.jsx`.
+- Data isolation: All `finaura_goals` and `finaura_transactions` documents have `user_id`.
+- Integrations: OpenAI (via Emergent LLM key), Google OAuth (`@react-oauth/google` + `google-auth`), Apple Sign-In JS + PyJWT JWKS, Resend email with console fallback.
 
-## Core Requirements (Static)
-1. Understand monthly income, expenses, savings, net worth, debt, investments, EMI, health score, and spending categories.
-2. Import or simulate statements, review categorized transactions, and correct categories.
-3. Analyze six months of income, expenses, savings, and rates.
-4. Create and prioritize financial goals with progress and monthly requirements.
-5. Explain meaningful financial changes through alerts and a timeline.
-6. Personalize financial education without issuing investment orders.
-7. Answer questions using the user profile and app data.
-8. Do not require bank connections; clearly label fictional demo data.
-9. Provide privacy notice, security settings, and deletion control.
+## Implemented in this session (Feb 2026 — Phase 2: Auth overhaul)
+- User registration & login (email + bcrypt hashed passwords, JWT sessions, brute-force lockout).
+- Google Sign-In (real OAuth flow; ready for user's `GOOGLE_CLIENT_ID`).
+- Apple Sign-In (real OAuth flow with JWKS verification; ready for `APPLE_CLIENT_ID` + key set).
+- Password reset flow (Resend email with console fallback so the flow works today without a Resend key).
+- Email verification with hashed one-time tokens.
+- 4-digit PIN lock (bcrypt-hashed, 5-attempt lockout, keyboard + click pad, first-time set + unlock modes).
+- Onboarding: choose blank profile or load demo data into the authenticated account.
+- Multi-tenant data scoping (`user_id` on goals & transactions).
+- Public `/demo` mode — full app UX with the shared demo profile; mutations disabled with sign-up prompts.
+- Sidebar overhaul: shows real user's name, initials, and lock/sign-out actions when authenticated.
+- Settings page: shows account info, PIN controls, provider list, sign-out, and data deletion.
 
-## Implemented (2026-08-20)
-- Premium responsive Finaura shell with nine route-based workspaces and mobile navigation.
-- Dashboard with summary metrics, cash-flow area chart, 78/100 health breakdown, goals, and insight.
-- My Finances allocation donut and cash/investment/debt/EMI view.
-- Statements upload simulation, review banner, editable transaction categories, and persisted category updates.
-- Six-Month Analysis bar chart and monthly breakdown.
-- Goals cards with progress/priority and persisted New Goal modal with friendly error state.
-- Financial Changes alert and March–August What Changed timeline.
-- Finaura Learn personalized feature recommendation plus topic cards.
-- Ask Finaura streaming contextual AI chat with educational disclaimer.
-- Settings & Privacy prototype controls and delete-my-financial-data action.
-- Backend persistence and ObjectId-safe API responses.
+## Prioritized backlog
+- **P1 — Real file upload parsing** (currently import is simulated demo six-month data).
+- **P1 — Financial digital twin / What-if simulator**.
+- **P2 — Advanced AI decision engine & goal-conflict engine**.
+- **P2 — Passkey / WebAuthn biometric add-on** (real Face ID / Touch ID on supported devices).
+- **P2 — Multi-currency support**.
 
-## Prioritized Backlog
-### P0
-- Replace demo profile storage with authenticated, per-user encrypted storage before real financial data.
-- Add production-grade document parsing/OCR with explicit review and confirmation states.
+## Test credentials
+See `/app/memory/test_credentials.md`.
 
-### P1
-- Add goal conflict calculator and what-if monthly contribution scenarios.
-- Add richer transaction entry and CSV/Excel import validation.
-- Add chat history persistence and user-visible conversation export/delete.
-
-### P2
-- Add advanced financial digital twin and early-warning signals.
-- Add expanded Learn library with progress tracking and explainers.
-
-## Next Tasks
-- Validate the end-to-end encryption and key-isolation design with a security review before real data.
-- Add authenticated user profiles and replace the single Aarav demo persona.
-- Connect production document processing only after the review/edit/confirm flow is retained.
+## Known limitations
+- Statement OCR / real PDF+CSV parsing is not implemented — imports use demo data only.
+- Google/Apple keys are placeholder; the sign-in buttons only appear after keys are set in `backend/.env` + `frontend/.env`.
+- Resend key is placeholder; verification/reset emails print to backend logs until key is added.

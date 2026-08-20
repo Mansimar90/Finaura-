@@ -1,0 +1,99 @@
+/* Finaura authentication + lock + onboarding styles */
+.auth-page{min-height:100vh;background:linear-gradient(180deg,#fdfbf7 0%,#f1f6f3 100%);display:flex;align-items:center;justify-content:center;padding:40px 20px}
+.auth-card{width:100%;max-width:440px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:36px 34px;box-shadow:0 20px 60px -30px rgba(15,23,42,.18)}
+.auth-brand{display:flex;align-items:center;gap:10px;font-family:Outfit;font-weight:700;font-size:24px;letter-spacing:-.5px;margin-bottom:26px}
+.auth-brand .brand-mark{display:grid;place-items:center;background:var(--ink);color:#fff;border-radius:50%;font-family:Outfit;font-size:19px;width:28px;height:28px;font-style:italic}
+.auth-card h1{font:600 26px Outfit;margin:0 0 6px;letter-spacing:-.5px}
+.auth-card>p.subtitle{color:var(--muted);font-size:13px;margin:0 0 26px;line-height:1.55}
+.auth-field{display:block;margin-bottom:14px}
+.auth-field label{display:block;font-size:11px;font-weight:600;color:#4b5b56;margin-bottom:6px;letter-spacing:.02em}
+.auth-field input{width:100%;border:1px solid #d9e4df;background:#fbfdfc;border-radius:8px;padding:12px 13px;font:13px 'Plus Jakarta Sans';color:var(--ink);transition:border .2s,background .2s}
+.auth-field input:focus{outline:none;border-color:var(--mint);background:#fff}
+.auth-field .hint{color:#94a3b8;font-size:11px;margin-top:5px}
+.auth-btn{width:100%;background:var(--ink);color:#fff;border:0;border-radius:8px;padding:13px;font:600 13px 'Plus Jakarta Sans';cursor:pointer;transition:transform .15s,background .2s;letter-spacing:.02em}
+.auth-btn:hover:not(:disabled){background:#25344d;transform:translateY(-1px)}
+.auth-btn:disabled{opacity:.6;cursor:not-allowed}
+.auth-btn.secondary{background:#fff;color:var(--ink);border:1px solid #d9e4df}
+.auth-btn.secondary:hover:not(:disabled){background:#f4f7f5}
+.auth-error{background:#fff0ef;border:1px solid #f4c5c1;color:#a83932;padding:11px 13px;border-radius:8px;font-size:12px;margin-bottom:14px;line-height:1.5}
+.auth-success{background:#e9faf2;border:1px solid #c9efdd;color:#087f56;padding:11px 13px;border-radius:8px;font-size:12px;margin-bottom:14px;line-height:1.5}
+.auth-divider{display:flex;align-items:center;gap:12px;margin:20px 0;color:#94a3b8;font-size:11px;text-transform:uppercase;letter-spacing:.15em}
+.auth-divider::before,.auth-divider::after{content:"";flex:1;height:1px;background:var(--line)}
+.social-buttons{display:grid;gap:10px;margin-bottom:6px}
+.social-btn{width:100%;background:#fff;border:1px solid #d9e4df;border-radius:8px;padding:11px 14px;font:600 13px 'Plus Jakarta Sans';color:var(--ink);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;transition:border .2s,background .2s}
+.social-btn:hover:not(:disabled){background:#fbfdfc;border-color:#bcd0c8}
+.social-btn.apple{background:#0f172a;color:#fff;border-color:#0f172a}
+.social-btn.apple:hover:not(:disabled){background:#25344d}
+.social-btn:disabled{opacity:.5;cursor:not-allowed}
+.social-btn svg,.social-btn img{width:16px;height:16px}
+.auth-footer{text-align:center;margin-top:22px;font-size:12px;color:var(--muted)}
+.auth-footer a{color:#087f56;font-weight:600;text-decoration:none}
+.auth-footer a:hover{text-decoration:underline}
+.auth-link-btn{background:none;border:0;color:#087f56;font-weight:600;font-size:12px;cursor:pointer;padding:0;font-family:inherit}
+.auth-link-btn:hover{text-decoration:underline}
+.auth-guest{margin-top:14px;text-align:center;font-size:11px;color:#94a3b8}
+.auth-guest button{background:none;border:1px dashed #cbd5c9;padding:9px 14px;border-radius:22px;font:600 11px 'Plus Jakarta Sans';color:#556b60;cursor:pointer;margin-top:8px}
+.auth-guest button:hover{border-color:var(--mint);color:#087f56}
+.auth-note{background:#f4f7f5;border-radius:8px;padding:11px 13px;font-size:11px;color:#556b60;line-height:1.55;margin-bottom:16px;border-left:3px solid var(--mint)}
+.auth-back{background:none;border:0;color:#7f8b88;font-size:12px;cursor:pointer;margin-bottom:10px;padding:0;font-family:inherit;display:inline-flex;align-items:center;gap:5px}
+.auth-back:hover{color:var(--ink)}
+.auth-provider-badge{margin-top:16px;padding:9px 12px;background:#fff9ea;border:1px solid #fce6b4;border-radius:8px;font-size:11px;color:#8a6a1c;line-height:1.55}
+
+/* PIN lock */
+.pin-page{min-height:100vh;background:linear-gradient(180deg,#0f172a 0%,#1a2b3e 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px;color:#fff}
+.pin-card{width:100%;max-width:400px;text-align:center}
+.pin-card .brand-mark{display:inline-grid;place-items:center;background:#fff;color:#0f172a;border-radius:50%;font-family:Outfit;font-size:24px;width:52px;height:52px;font-style:italic;margin-bottom:24px}
+.pin-card h1{font:600 26px Outfit;margin:0 0 6px;letter-spacing:-.5px}
+.pin-card p.hint{color:#94a3b8;font-size:13px;margin:0 0 28px}
+.pin-dots{display:flex;justify-content:center;gap:14px;margin-bottom:24px}
+.pin-dot{width:16px;height:16px;border-radius:50%;background:#334155;transition:background .2s,transform .2s}
+.pin-dot.filled{background:var(--mint);transform:scale(1.15)}
+.pin-dot.error{background:#ef4444}
+.pin-pad{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;max-width:280px;margin:0 auto}
+.pin-key{background:rgba(255,255,255,.08);border:0;color:#fff;font:500 22px Outfit;padding:16px;border-radius:14px;cursor:pointer;transition:background .15s,transform .1s}
+.pin-key:hover{background:rgba(255,255,255,.16)}
+.pin-key:active{transform:scale(.95)}
+.pin-key.blank{visibility:hidden}
+.pin-key.wide{font-size:14px;font-weight:500}
+.pin-error-msg{color:#fca5a5;font-size:12px;margin-top:18px;min-height:16px}
+.pin-actions{margin-top:26px;display:flex;justify-content:center;gap:18px;font-size:12px}
+.pin-actions button{background:none;border:0;color:#94a3b8;cursor:pointer;font-family:inherit;font-size:12px}
+.pin-actions button:hover{color:#fff}
+.pin-badge{display:inline-block;padding:5px 11px;background:rgba(16,185,129,.15);color:var(--mint);border-radius:20px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;margin-bottom:20px}
+
+/* Onboarding */
+.onboard-page{min-height:100vh;background:linear-gradient(180deg,#fdfbf7 0%,#f1f6f3 100%);display:flex;align-items:center;justify-content:center;padding:40px 20px}
+.onboard-card{width:100%;max-width:600px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:40px 38px;box-shadow:0 20px 60px -30px rgba(15,23,42,.18)}
+.onboard-card h1{font:600 28px Outfit;margin:0 0 6px;letter-spacing:-.5px}
+.onboard-card>p{color:var(--muted);font-size:13px;margin:0 0 30px;line-height:1.6}
+.onboard-choices{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:24px}
+.onboard-choice{background:#fbfdfc;border:1.5px solid #e7ebe8;border-radius:12px;padding:22px 20px;cursor:pointer;text-align:left;transition:border .2s,transform .2s,background .2s}
+.onboard-choice:hover{border-color:var(--mint);transform:translateY(-2px)}
+.onboard-choice.selected{border-color:var(--mint);background:#f0faf5}
+.onboard-choice .badge{display:inline-block;padding:4px 9px;background:#e5f8ef;color:#087f56;border-radius:20px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px}
+.onboard-choice h3{font:600 17px Outfit;margin:0 0 8px}
+.onboard-choice p{font-size:12px;color:var(--muted);margin:0;line-height:1.55}
+
+/* Top bar for guest/demo mode */
+.demo-topbanner{background:#0f172a;color:#fff;padding:11px 18px;display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:12px}
+.demo-topbanner strong{font-weight:600}
+.demo-topbanner .actions{display:flex;gap:10px}
+.demo-topbanner button{background:#fff;color:#0f172a;border:0;border-radius:6px;padding:7px 14px;font:600 11px 'Plus Jakarta Sans';cursor:pointer;transition:transform .15s}
+.demo-topbanner button:hover{transform:translateY(-1px)}
+.demo-topbanner button.ghost{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.3)}
+.demo-topbanner button.ghost:hover{background:rgba(255,255,255,.08)}
+
+/* Adjust settings account block */
+.account-card{background:#fff;border:1px solid var(--line);border-radius:8px;padding:22px;margin-bottom:14px}
+.account-card h3{font:600 17px Outfit;margin:0 0 12px}
+.account-card .rows>div{display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line);font-size:12px;color:#4b5b56}
+.account-card .rows>div:last-child{border:0}
+.account-card .rows strong{color:var(--ink);font-weight:600}
+.pill-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:20px;font:600 11px 'Plus Jakarta Sans';cursor:pointer;border:1px solid #cedbd5;background:#fff;color:var(--ink)}
+.pill-btn:hover{background:#f4f7f5}
+.pill-btn.mint{background:var(--mint);color:#fff;border-color:var(--mint)}
+.pill-btn.mint:hover{background:#0f9c6f}
+
+/* Modal shared with auth */
+.modal .auth-field{margin-bottom:12px}
+.modal .auth-btn{margin-top:6px}

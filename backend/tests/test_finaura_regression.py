@@ -1,7 +1,15 @@
 import os
 import requests
 
-BASE_URL = os.environ["REACT_APP_BACKEND_URL"].splitlines()[0].rstrip("/")
+import pytest
+from dotenv import dotenv_values
+
+_env = dotenv_values("/app/frontend/.env")
+BASE_URL = (os.environ.get("REACT_APP_BACKEND_URL") or _env["REACT_APP_BACKEND_URL"]).splitlines()[0].rstrip("/")
+
+# Phase 1 suite: these hit the pre-auth (now Bearer-protected) finance endpoints.
+# Superseded by tests/test_auth_phase2.py which covers the same ground with auth.
+pytestmark = pytest.mark.skip(reason="Obsolete after Phase 2 auth: endpoints now require Bearer JWT; see test_auth_phase2.py")
 
 
 def test_overview_has_demo_profile_and_no_mongo_id():

@@ -1,0 +1,53 @@
+{
+  "summary": "Phase 2 (auth stack) full backend + frontend testing. Backend: created /app/backend/tests/test_auth_phase2.py (32 tests) covering register/login/me, JWT, OAuth-not-configured 503s, forgot/reset/verify-email, PIN set/verify/remove + validation, onboarding (demo & empty seeding), public /api/demo/overview, multi-tenant isolation, finance CRUD, delete-data scoping, and streaming /api/chat (anon + authed). 30/32 passed. Two REAL bugs found: both brute-force lockout paths (login and verify-pin) return HTTP 500 instead of 429 due to naive-vs-aware datetime comparison, and the login lockout key uses the per-pod client IP so the counter splits across ingress replicas. Frontend: verified login page render (OAuth badge, no Google/Apple buttons), invalid-login error, signup -> onboarding -> set-pin -> dashboard, PIN lock/unlock (wrong PIN shows 'Incorrect PIN. 4 attempts left.'), public /demo with read-only pill + banner, demo 'Sign up to save' -> /signup, authed goal create, statement import, settings account card + set PIN + delete data, sign-out (top bar + settings) clearing localStorage, garbage-token cleanup, forgot/reset/verify-email pages, mobile layout. All core flows pass.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/auth/verify-pin", "issue": "After 5 wrong PINs the account lockout path returns 500 Internal Server Error instead of 429. Backend log: TypeError: can't compare offset-naive and offset-aware datetimes (auth.py verify_pin: `lockout_until > datetime.now(timezone.utc)` where pin_lockout_until comes back naive from Mongo). Fix: create the Motor client with tz_aware=True or normalise stored/compared datetimes.", "priority": "HIGH"},
+      {"endpoint": "POST /api/auth/login", "issue": "Brute-force lockout is broken: (a) once count>=5, check_login_lockout raises TypeError (naive vs aware `rec['last_attempt']`) -> 500 instead of 429; observed codes for 14 bad logins: [401 x6, 500,500,500, 401x4, 500]. (b) Lockout key is f\"{request.client.host}:{email}\" and request.client.host is the ingress/pod IP (observed 10.49.136.23 AND .24 for the same client), so the counter splits per replica giving 5xN attempts, and in production all users behind the proxy share one counter. Recommend keying on email (and optionally X-Forwarded-For first hop).", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "POST /api/auth/onboard (choice='demo')", "issue": "Seeded goals reuse the fixed ids goal-1/2/3 and transactions txn-1..6 for every user. Scoping by user_id works today, but any future cross-user query or client-side keying by id will collide; prefer uuid4 per-user ids."},
+      {"endpoint": "GET /api/auth/config", "issue": "Returns google_client_id / apple_client_id / apple_redirect_uri unconditionally; harmless while empty but avoid echoing server config beyond the *_enabled booleans."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Ask Finaura (App.js:531)", "issue": "The streamed AI answer is rendered with className 'message user' so it appears as a right-aligned green USER bubble, and the user's own question is never rendered. No chat history is kept (single `answer` state overwrites). Also no data-testid on the answer bubble.", "selector": "[data-testid=\"ask-finaura-input\"] / .message.user", "priority": "MEDIUM"},
+      {"component": "Dashboard (App.js:127)", "issue": "Date eyebrow is hardcoded 'Friday, 28 August 2026' (actual date 20 Aug 2026). Should be computed from new Date().", "selector": ".eyebrow", "priority": "MEDIUM"},
+      {"component": "Goals modal (App.js:372)", "issue": "New-goal modal only collects a name; target_amount (500000), deadline (2030), priority and monthly_contribution are hardcoded, so users cannot set real goal values.", "selector": "[data-testid=\"goal-name-input\"]", "priority": "MEDIUM"},
+      {"component": "Shell mode pill / Settings", "issue": "After 'Delete my financial data' succeeds the sidebar pill still reads 'Demo data loaded' until a reload (user object not refetched).", "selector": "[data-testid=\"workspace-mode-pill\"]", "priority": "LOW"},
+      {"component": "PinLock (set-pin confirm)", "issue": "On a mismatched confirmation the [data-testid=\"pin-error-msg\"] node was present but with empty text when sampled ~1.2s after the 4th digit; the reset itself worked and re-entering the same PIN succeeded. Verify the mismatch copy stays visible long enough to be read.", "selector": "[data-testid=\"pin-error-msg\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Mobile (390px) demo dashboard", "issues": ["Demo banner 'Sign in' button label wraps to two lines inside the pill; no horizontal overflow otherwise."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_auth_phase2.py", "/app/test_reports/pytest/phase2.xml"],
+  "action_items": [
+    "Fix naive/aware datetime comparison in auth.py check_login_lockout and verify_pin so lockout returns 429 (not 500). Simplest: AsyncIOMotorClient(..., tz_aware=True) or store/compare naive UTC consistently.",
+    "Change login lockout key from client IP+email to email (ingress gives a different pod IP per request, so the 5-attempt limit is not enforced reliably).",
+    "Ask Finaura: render the user's question, style the AI reply as an assistant bubble, keep message history, add data-testid on messages.",
+    "Replace hardcoded dashboard date with a computed date.",
+    "Let the new-goal modal capture target amount / deadline / priority / monthly contribution.",
+    "Refresh user state after DELETE /api/financial/data so the workspace pill updates."
+  ],
+  "critical_code_review_comments": [
+    "/app/frontend/src/App.js is 777 lines and holds Shell, Dashboard, Finances, Statements, Goals, Ask, Settings and routing — split into per-page modules (>700 line guideline).",
+    "auth.py brute-force helpers store Mongo datetimes without tz awareness; every comparison against datetime.now(timezone.utc) is a latent 500 (already reproduced twice).",
+    "auth.py onboard() imports DEFAULT_GOALS/TRANSACTIONS from server inside the handler creating a circular import shim; move shared demo fixtures into their own module.",
+    "public_user()/_clean() correctly strip _id and user_id — verified no ObjectId leakage in any response tested.",
+    "Historic 500s in backend.err.log (ObjectId not iterable on POST /api/goals and GET /api/financial/overview) are no longer reproducible — appear to predate the current code."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_auth_phase2.py (new)",
+    "/app/backend/tests/test_finaura_regression.py (env loaded from /app/frontend/.env; module skipped as obsolete post-auth)"
+  ],
+  "success_rate": {"backend": "94% (30/32 pytest cases)", "frontend": "~93% (all core flows pass; 5 cosmetic/UX defects)"},
+  "seed_data_creation": "Created ~20 throwaway users TEST_*@qa.finaura.dev (auto-deleted via DELETE /api/auth/account teardown); UI runs left 2-3 TEST_ui* users with demo/empty data. NOTE: emails on the .test TLD are rejected by email-validator (422) — use qa.finaura.dev.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "testuser@finaura.dev / testpass123 works (login 200), but this account HAS a PIN set whose value is unknown, so UI login lands on /lock and cannot reach the app. Please record the PIN in /app/memory/test_credentials.md or clear pin_hash for this user.",
+  "context_for_next_testing_agent": "Run `pytest /app/backend/tests/test_auth_phase2.py -q -p no:randomly`. The only expected failures are TestRegisterLogin::test_bruteforce_lockout_429 and TestPin::test_pin_lockout_after_5_failures — both assert 429 and currently get 500/401 (real bugs). Login lockout state lives in db.login_attempts keyed by '<podIP>:<email>'; delete those docs if a test email gets stuck. Frontend flows already verified: signup->onboarding->set-pin->dashboard, /lock unlock, /demo public + 'Sign up to save' -> /signup, settings PIN modal, delete data, sign-out. Chat streaming works both anonymously and authenticated (~5-10s).",
+  "rca_of_the_issue": "Motor returns Mongo BSON datetimes as timezone-naive by default (client not created with tz_aware=True). auth.py writes last_attempt/pin_lockout_until with datetime.now(timezone.utc) and later compares the value read back against an aware datetime, raising TypeError('can't compare offset-naive and offset-aware datetimes') inside the request handler -> FastAPI 500. This only triggers on the lockout branch, which is why normal auth passes. Secondary cause for the login limiter: request.client.host is the Kubernetes ingress/pod address, which varies per request across replicas, so the per-identifier counter never accumulates deterministically."
+}
