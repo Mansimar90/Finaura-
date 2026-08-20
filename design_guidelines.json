@@ -1,0 +1,48 @@
+{
+  "project_name": "Finaura",
+  "tagline": "Your Money. Your Goals. Your Future.",
+  "theme": "Premium Light Fintech Dashboard with Warm Ivory, Charcoal, and Mint accents",
+  "typography": {
+    "heading_font": "Outfit, sans-serif",
+    "body_font": "Plus Jakarta Sans, sans-serif",
+    "mono_font": "JetBrains Mono, monospace"
+  },
+  "colors": {
+    "primary": "#0F172A",
+    "accent_mint": "#10B981",
+    "warm_ivory": "#FDFBF7",
+    "surface": "#FFFFFF",
+    "border": "#E2E8F0",
+    "charcoal": "#1E293B",
+    "muted": "#64748B"
+  },
+  "navigation_items": [
+    { "name": "Dashboard", "path": "/", "icon": "LayoutDashboard" },
+    { "name": "My Finances", "path": "/finances", "icon": "Wallet" },
+    { "name": "Statements", "path": "/statements", "icon": "FileText" },
+    { "name": "Six-Month Analysis", "path": "/analysis", "icon": "TrendingUp" },
+    { "name": "Goals & Priorities", "path": "/goals", "icon": "Target" },
+    { "name": "Financial Changes", "path": "/changes", "icon": "Activity" },
+    { "name": "Finaura Learn", "path": "/learn", "icon": "BookOpen" },
+    { "name": "Ask Finaura", "path": "/ask", "icon": "Sparkles" },
+    { "name": "Settings & Privacy", "path": "/settings", "icon": "ShieldCheck" }
+  ],
+  "demo_user": {
+    "name": "Aarav Sharma",
+    "currency": "₹",
+    "net_worth": 3485000,
+    "monthly_income": 185000,
+    "monthly_savings": 62000
+  },
+  "image_urls": {
+    "ivory_aesthetic": "https://images.unsplash.com/photo-1547104442-991cb31eaafd?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA3MDB8MHwxfHNlYXJjaHwzfHx3YXJtJTIwaXZvcnklMjBtaW5pbWFsaXN0JTIwZmluYW5jZSUyMGFlc3RoZXRpY3xlbnwwfHx8fDE3ODcyMDcyODV8MA&ixlib=rb-4.1.0&q=85",
+    "indian_currency": "https://images.unsplash.com/photo-1565371767810-ef913a6c8315?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHwxfHxpbmRpYW4lMjBjdXJyZW5jeSUyMHdlYWx0aCUyMGludmVzdG1lbnQlMjBhYnN0cmFjdHxlbnwwfHx8fDE3ODcyMDcyODV8MA&ixlib=rb-4.1.0&q=85",
+    "analytics_dashboard": "https://images.unsplash.com/photo-1551288049-bebda4e38f71?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTN8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBmaW50ZWNoJTIwZGFzaGJvYXJkJTIwYW5hbHl0aWNzfGVufDB8fHx8MTc4NzIwNzI4NXww&ixlib=rb-4.1.0&q=85"
+  },
+  "universal_guidelines": [
+    "All interactive and key informational elements MUST include a data-testid attribute.",
+    "Do not use complete transparent background in headers or overlays.",
+    "Ensure high contrast and WCAG AA compliance.",
+    "Use generous spacing (p-6, p-8, gap-6) and cardless or subtle 8px border-radius styling."
+  ]
+}
