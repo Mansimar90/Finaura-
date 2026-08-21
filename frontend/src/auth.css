@@ -225,3 +225,74 @@
 :root[data-theme="dark"] .article-hero{background:#111827}
 :root[data-theme="dark"] .article-body p{color:#cbd5e1}
 
+
+/* Dark theme contrast fixes */
+:root[data-theme="dark"] .primary-btn{background:var(--mint);color:#fff}
+:root[data-theme="dark"] .primary-btn:hover{background:#0f9c6f}
+:root[data-theme="dark"] .outline-btn{background:transparent;color:#e2e8f0;border-color:#334155}
+:root[data-theme="dark"] .outline-btn:hover{background:#1e293b}
+:root[data-theme="dark"] .icon-btn{background:#1e293b;color:#e2e8f0;border-color:#334155}
+:root[data-theme="dark"] .icon-btn:hover{background:#334155}
+:root[data-theme="dark"] .pill-btn{background:#1e293b;color:#e2e8f0;border-color:#334155}
+:root[data-theme="dark"] .pill-btn:hover{background:#334155}
+:root[data-theme="dark"] .pill-btn.mint{background:var(--mint);color:#fff;border-color:var(--mint)}
+:root[data-theme="dark"] .light-btn{background:#1e293b;color:#e2e8f0}
+:root[data-theme="dark"] .light-btn:hover{background:#334155}
+:root[data-theme="dark"] .danger-btn{background:#3f0a0a;color:#fca5a5;border-color:#7f1d1d}
+:root[data-theme="dark"] .theme-choice{background:#111827;color:#e2e8f0;border-color:#334155}
+:root[data-theme="dark"] .theme-choice:hover{border-color:var(--mint)}
+:root[data-theme="dark"] .theme-choice.active{background:var(--mint);color:#fff;border-color:var(--mint)}
+:root[data-theme="dark"] .memory-row{background:#111827;border-color:#334155;color:#e2e8f0}
+:root[data-theme="dark"] .memory-row p{color:#cbd5e1}
+:root[data-theme="dark"] .memory-row small{color:#94a3b8}
+:root[data-theme="dark"] .recharts-tooltip-wrapper .recharts-default-tooltip,
+:root[data-theme="dark"] .recharts-default-tooltip{background:#0f172a !important;border:1px solid #334155 !important;color:#e2e8f0 !important}
+:root[data-theme="dark"] .recharts-tooltip-item{color:#e2e8f0 !important}
+:root[data-theme="dark"] .insight,:root[data-theme="dark"] .insight strong,:root[data-theme="dark"] .insight p{color:#e2e8f0}
+:root[data-theme="dark"] .success-banner{background:#064e3b;color:#a7f3d0;border-color:#065f46}
+:root[data-theme="dark"] .auth-error{background:#450a0a;color:#fecaca;border-color:#7f1d1d}
+:root[data-theme="dark"] .auth-success{background:#064e3b;color:#a7f3d0;border-color:#065f46}
+:root[data-theme="dark"] .auth-note{background:#1e293b;color:#cbd5e1;border-left-color:var(--mint)}
+:root[data-theme="dark"] .metric-icon.positive{background:#064e3b;color:#a7f3d0}
+:root[data-theme="dark"] .metric-icon.negative{background:#450a0a;color:#fecaca}
+:root[data-theme="dark"] .metric-icon.neutral{background:#1e293b;color:#e2e8f0}
+:root[data-theme="dark"] table th,:root[data-theme="dark"] table td{background:transparent}
+:root[data-theme="dark"] .review-pill,:root[data-theme="dark"] .signal-summary,:root[data-theme="dark"] .learn-count,:root[data-theme="dark"] .period-selector,:root[data-theme="dark"] .ai-badge,:root[data-theme="dark"] .data-note,:root[data-theme="dark"] .status{background:#111827;color:#cbd5e1;border-color:#334155}
+:root[data-theme="dark"] input[type=file]{color:#e2e8f0}
+:root[data-theme="dark"] .upload-dropzone{background:#111827;border-color:#334155}
+:root[data-theme="dark"] .upload-dropzone p{color:#94a3b8}
+:root[data-theme="dark"] .demo-topbanner{background:#020617}
+:root[data-theme="dark"] .model-picker{background:#1e293b}
+:root[data-theme="dark"] .model-pill{color:#cbd5e1}
+:root[data-theme="dark"] .model-pill.active{background:var(--mint);color:#fff}
+:root[data-theme="dark"] .message.user{background:#1e293b;color:#e2e8f0}
+:root[data-theme="dark"] .message.assistant{background:#111827;color:#e2e8f0;border-color:#334155}
+:root[data-theme="dark"] .goal-emoji{background:#1e293b;color:#e2e8f0}
+
+/* Dark theme — remaining background overrides */
+:root[data-theme="dark"] .insight{background:#111827;color:#e2e8f0;border-color:#334155}
+:root[data-theme="dark"] .insight strong,:root[data-theme="dark"] .insight p{color:#e2e8f0}
+:root[data-theme="dark"] .prompt{background:#111827;border-color:#334155;color:#e2e8f0}
+:root[data-theme="dark"] .prompt:hover{background:#1e293b}
+:root[data-theme="dark"] .alert-card{background:#3f1d0a;color:#fed7aa;border-color:#7c2d12}
+:root[data-theme="dark"] .alert-card h3,:root[data-theme="dark"] .alert-card p{color:#fed7aa}
+:root[data-theme="dark"] .article-ai-cta{background:#111827;border-color:#334155;color:#e2e8f0}
+:root[data-theme="dark"] .article-ai-cta h3,:root[data-theme="dark"] .article-ai-cta p{color:#e2e8f0}
+:root[data-theme="dark"] .chat-body{background:#111827;border-color:#334155}
+:root[data-theme="dark"] select{background:#111827 !important;color:#e2e8f0 !important;border-color:#334155 !important}
+:root[data-theme="dark"] select option{background:#0f172a;color:#e2e8f0}
+:root[data-theme="dark"] .table-wrap{background:#0f172a}
+:root[data-theme="dark"] .learn-feature{background:#111827;color:#e2e8f0;border-color:#334155}
+:root[data-theme="dark"] .learn-feature h2,:root[data-theme="dark"] .learn-feature p{color:#e2e8f0}
+:root[data-theme="dark"] .step,:root[data-theme="dark"] .step strong,:root[data-theme="dark"] .step p{color:#e2e8f0}
+:root[data-theme="dark"] .privacy-row,:root[data-theme="dark"] .privacy-row strong,:root[data-theme="dark"] .privacy-row p{color:#e2e8f0}
+:root[data-theme="dark"] .timeline-item strong,:root[data-theme="dark"] .timeline-item p{color:#e2e8f0}
+:root[data-theme="dark"] .goal-info small{color:#94a3b8}
+:root[data-theme="dark"] .modal input,:root[data-theme="dark"] .modal select{background:#111827;color:#e2e8f0;border-color:#334155}
+:root[data-theme="dark"] .modal-close{color:#94a3b8}
+:root[data-theme="dark"] .learn-card p{color:#94a3b8}
+:root[data-theme="dark"] .goal-card h3,:root[data-theme="dark"] .goal-big-amount{color:#f8fafc}
+
+/* Darken mint buttons for better contrast in dark mode */
+:root[data-theme="dark"] .primary-btn,:root[data-theme="dark"] .pill-btn.mint,:root[data-theme="dark"] .theme-choice.active,:root[data-theme="dark"] .model-pill.active{background:#059669}
+:root[data-theme="dark"] .primary-btn:hover,:root[data-theme="dark"] .pill-btn.mint:hover{background:#047857}

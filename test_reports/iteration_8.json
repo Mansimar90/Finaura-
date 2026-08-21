@@ -1,0 +1,56 @@
+{
+  "summary": "Iteration-8 retest of the 4 iteration-7 defects. VERIFIED FIXED: (1) CRITICAL Learn article routing — all 6 article ids open via card click and direct URL in both /learn/{id} and /demo/learn/{id}; article-title/article-body render, article-back-button returns to /learn, article-ask-ai-button seeds the prompt into ask-finaura-input; (2) LoadingScreen brand now 'FINAURA AI'; (3) backend memory upsert preserves id + created_at with updated_at advancing and a single row per key. STILL BROKEN: dark-theme contrast is only partially fixed — 6 element groups still render light text (#e2e8f0) on light backgrounds (unreadable). Backend: 9/9 new iteration-8 tests, 27/27 phase-4, 63 passed/6 skipped regression = 100%. Frontend flows (goals CRUD, profile persist, what-if run, memory-aware chat returning ₹65,000, demo mode) all pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/financial/overview", "issue": "Still open from iteration 7: monthly history is all-zero once the profile is populated, so the dashboard cash-flow chart / tooltip shows ₹0 for every month (tooltip verified: 'May expenses ₹0 income ₹0')."},
+      {"endpoint": "POST /api/chat", "issue": "Still open: fixed per-user session_id with no reset path. Also response markdown is returned with raw '**' markers and the UI renders them literally."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dark theme (data-theme='dark') — remaining unreadable elements (measured contrast ratios via getComputedStyle)", "issues": [
+        ".insight (Dashboard 'Worth noticing') — color #e2e8f0 on background rgb(241,250,246), ratio 1.16. auth.css:251 sets only the dark text color, never overrides the light .insight background.",
+        ".prompt (Ask page 'TRY ASKING' cards) — color #e2e8f0 on rgb(255,255,255), ratio 1.23 (3 buttons unreadable).",
+        "native <select> controls — What-If goal picker, Profile 'Financial experience'/'Risk tolerance': color #e2e8f0 on rgb(251,253,252), ratio ~1.2.",
+        ".alert-card (Financial Changes page) — color #e2e8f0 on rgb(255,247,233), ratio ~1.2; whole alert body unreadable.",
+        ".article-ai-cta (article footer 'Keep learning' block) — color #e2e8f0 on rgb(244,247,245), unreadable.",
+        ".chat-body on /ask stays light rgb(251,253,252) inside an otherwise dark chat card — inconsistent panel (bubbles themselves are fine at 11.9:1 / 14.4:1)."
+      ]},
+      {"screen": "Dark theme — mint (accent) buttons, sub-AA but legible", "issues": [
+        "White text on #10b981 gives 2.54:1 for .primary-btn ('New goal', 'Save profile', 'Run simulation'), mint .pill-btn ('Save', 'Set PIN'), active .theme-choice ('Dark') and active .model-pill ('GPT') — below WCAG AA 4.5:1; darken the mint or use a dark foreground."
+      ]},
+      {"screen": "Article page header / Profile", "issues": [
+        "On /learn/{id} and /demo/learn/{id} the topbar eyebrow+title and the sidebar active item still say 'Dashboard' (article route missing from the title/nav map).",
+        "Profile 'Date of birth' uses the browser-native date input instead of the shadcn calendar component."
+      ]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration8.py",
+    "/app/test_reports/pytest/iteration8.xml",
+    "/app/test_reports/pytest/phase4_i8.xml",
+    "/app/test_reports/pytest/regression_i8.xml"
+  ],
+  "action_items": [
+    "Dark theme: add background overrides (not just color) for .insight, .prompt, .alert-card, .article-ai-cta, .chat-body and native select/option in :root[data-theme='dark'] — they are currently light-bg with light text (1.1–1.3:1).",
+    "Dark theme: raise contrast on mint-filled controls (white on #10b981 = 2.54:1).",
+    "Add the /learn/{id} route to the topbar-title + sidebar-active map so article pages don't show 'Dashboard'.",
+    "Optional/carried over: make 6-month history consistent with profile-derived summary (cash-flow chart & tooltip currently ₹0), render chat markdown instead of raw '**'."
+  ],
+  "critical_code_review_comments": [
+    "auth.css dark overrides set only `color` for .insight (line 251) and similar blocks; any component with a hardcoded light background needs a paired background override — consider driving these from CSS variables instead of per-selector overrides.",
+    "App.js is still ~1076 lines with Dashboard/Goals/Learn/Ask/Settings inline; article routing is now a manual pathname branch (works) but should move into the Routes tree.",
+    "App.js AppWorkspace maps pages by path but the Shell title/nav map omits /learn/:id, causing the wrong page header."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration8.py", "/app/test_reports/iteration_8.json"],
+  "success_rate": {"backend": "100% (9/9 iteration-8 + 27/27 phase-4 + 63 passed/6 skipped regression)", "frontend": "92% (all functional flows pass; dark-theme contrast partially unfixed)"},
+  "seed_data_creation": "Created and deleted memory key 'preserve_test' (income) for testuser@finaura.dev; deleted the leftover 'TEST_iso_key' memory from iteration 7 (only 'monthly_income' = ₹65,000 remains); created and deleted goal 'TEST_i8_goal'; profile occupation set to 'QA Engineer i8'; theme restored to light.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "testuser@finaura.dev / testpass123 (login response key is 'access_token')",
+  "context_for_next_testing_agent": "Learn article routing is fixed and verified for all 6 ids in auth + demo mode; memory upsert preservation is covered by /app/backend/tests/test_iteration8.py. Only dark-theme contrast remains: reproduce by logging in, /settings -> [data-testid='theme-dark'], then page.evaluate contrast on .insight (Dashboard), .prompt (/ask), select (/whatif, /profile), .alert-card (/changes), .article-ai-cta (/learn/emergency-funds). Note the Ask send button testid is 'ask-finaura-send-button' (not 'ask-send-button'), and goals use 'create-goal-button'/'save-goal-button'/'delete-goal-{id}'.",
+  "rca_of_the_issue": "Dark-theme fixes in auth.css only override text `color` for blocks whose light background is hardcoded on the base rule (.insight #f1faf6, .prompt #fff, .alert-card #fff7e9, .article-ai-cta #f4f7f5, .chat-body #fbfdfc, native selects #fbfdfc). With text forced to #e2e8f0 the result is light-on-light at ~1.2:1. Each needs a matching dark `background`/`border` override (or migration to theme CSS variables)."
+}

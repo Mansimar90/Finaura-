@@ -115,24 +115,30 @@ def build_memory_router(db: AsyncIOMotorDatabase, get_current_user):
         if cat not in MEMORY_CATEGORIES:
             raise HTTPException(status_code=400, detail=f"Unknown category '{body.category}'.")
         now = datetime.now(timezone.utc)
-        doc = {
-            "id": str(uuid.uuid4()),
-            "user_id": str(user["_id"]),
-            "category": cat,
-            "key": body.key.strip(),
-            "value": body.value.strip(),
-            "numeric_value": body.numeric_value,
-            "unit": (body.unit or "").strip() or None,
-            "created_at": now,
-            "updated_at": now,
-        }
-        # Upsert by (user, category, key) so re-adding an income updates it
+        # Upsert by (user, category, key) so re-adding an income updates it.
+        # Preserve existing id + created_at on updates by putting them only in $setOnInsert.
+        new_id = str(uuid.uuid4())
         await db.finaura_memories.update_one(
-            {"user_id": doc["user_id"], "category": cat, "key": doc["key"]},
-            {"$set": {**doc, "created_at": now}, "$setOnInsert": {"_created_first": now}},
+            {"user_id": str(user["_id"]), "category": cat, "key": body.key.strip()},
+            {
+                "$set": {
+                    "value": body.value.strip(),
+                    "numeric_value": body.numeric_value,
+                    "unit": (body.unit or "").strip() or None,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {
+                    "id": new_id,
+                    "user_id": str(user["_id"]),
+                    "category": cat,
+                    "key": body.key.strip(),
+                    "created_at": now,
+                },
+            },
             upsert=True,
         )
-        return _clean(doc)
+        saved = await db.finaura_memories.find_one({"user_id": str(user["_id"]), "category": cat, "key": body.key.strip()})
+        return _clean(saved)
 
     @router.patch("/{memory_id}")
     async def update_memory(memory_id: str, body: MemoryUpdate, user=Depends(get_current_user)):

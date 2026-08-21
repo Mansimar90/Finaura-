@@ -1,0 +1,36 @@
+{
+  "summary": "Frontend-only retest of iteration-9 dark-theme fixes + article-page header regression fix. Logged in as testuser@finaura.dev, switched to dark via [data-testid='theme-dark'], and measured getComputedStyle backgrounds/colors on every element flagged in iteration 8, then ran a page-wide automated sweep for any element still rendering a light (luminance>0.5) background in dark mode across /, /finances, /statements, /analysis, /goals, /whatif, /changes, /learn, /ask, /profile, /settings, /learn/{id}. Regression flows re-verified: Goals create/edit/delete, Profile save+persist (reload-verified), What-If simulation, memory-aware chat (GPT-5.4 replied referencing stored income), sign-out, demo banner, article open. All iteration-8 targets are FIXED except two newly-surfaced items (What-If result cards, chat suggestion chips) and the mint button contrast which improved 2.54 -> 3.77 but is still below AA 4.5.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "WhatIf 'Projected outcome' stat cards (.whatif-stats>div and .whatif-stats>div.highlight)", "issue": "CRITICAL dark-theme miss: backgrounds stay light (#fbfdfc / #e5f8ef) while text inherits dark-theme light color rgb(226,232,240) -> contrast ~1.05:1, the 'CURRENT PLAN' / 'NEW PLAN' values are effectively invisible after running a simulation. Add :root[data-theme='dark'] .whatif-stats>div{background:#111827;border-color:#334155;color:#e2e8f0} and a darker variant for .highlight (e.g. #064e3b).", "selector": ".whatif-stats > div, .whatif-stats > div.highlight", "priority": "HIGH"},
+      {"component": "Chat suggestion chips (.suggestions button, data-testid='suggested-question-*')", "issue": "Still pure white background (#ffffff) with green text in dark mode - stands out as a white block inside the dark chat card. .prompt was fixed but '.suggestions button' shares the same base rule and was not overridden.", "selector": ".suggestions button", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "All pages (dark theme)", "issues": [
+        "Mint buttons: .primary-btn / .theme-choice.active / .pill-btn.mint now #059669 with #fff text = 3.77:1 (was 2.54:1). Improved but still below WCAG AA 4.5:1 for their 12px bold labels - #047857 gives ~5.1:1.",
+        "Cosmetic only (dark-on-light, contrast fine): pastel badges keep light-mode palette in dark theme - .demo-pill (#effaf5), .avatar (#d9f5e9), .priority.high/.medium, .income-tag/.expense-tag, .rate-chip, .memory-cat, .privacy-icon, .upload-icon, .ai-avatar, .alert-symbol, .learn-art.mint/yellow/peach. All keep dark text so they are legible, but they read as light patches in a dark UI."
+      ]}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_9.json"],
+  "action_items": [
+    "Add dark overrides for .whatif-stats>div and .whatif-stats>div.highlight (currently unreadable simulation results in dark mode).",
+    "Add dark override for '.suggestions button' (chat suggestion chips still white).",
+    "Optional AA polish: darken mint buttons from #059669 to #047857 (3.77:1 -> ~5.1:1)."
+  ],
+  "critical_code_review_comments": [
+    "Dark-theme rules are being added ad-hoc per class in auth.css; the leaked .whatif-stats/.suggestions cases show the pattern is fragile. Prefer driving component backgrounds from CSS variables (--surface, --surface-2, --accent-soft) so a theme switch flips everything at once.",
+    "App.js is a single very large file (>1000 lines) hosting every page component; split per-route components into modules.",
+    "React console error on /whatif and the goals modal: a <span> is rendered inside <option> ('In HTML, <span> cannot be a child of <option>') - caused by the dynamic-instrumentation wrapper around {g.name}; render option labels as a plain string/interpolation-free child to avoid hydration warnings."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (backend untouched this iteration)", "frontend": "90%"},
+  "seed_data_creation": "Created and deleted goal 'TEST_dark_goal' -> 'TEST_dark_goal_edited'; profile occupation set to 'QA Engineer i9' on testuser@finaura.dev.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "testuser@finaura.dev / testpass123",
+  "context_for_next_testing_agent": "Verified FIXED in dark mode (measured computed styles): .insight #111827 (14.4:1), .prompt #111827, .chat-body #111827, .alert-card #3f1d0a (11.1:1), .article-ai-cta #111827, every native <select> on /settings(1), /whatif(1), /profile(2), /statements(10) and the goals modal (goal-priority-input) = #111827 with #e2e8f0 text. Article header FIXED: /learn/emergency-funds and /demo/learn/mutual-funds-101 both show page-title 'FINAURA Learn' and nav-finaura-learn has class 'nav-item active'. Theme persists across reload via localStorage['finaura_theme'] (NOT server-side, so a fresh browser context starts in light mode - set theme explicitly at the start of each script). Regression PASS: goals CRUD, profile persist, whatif run, chat (assistant reply used stored income), sign-out -> /login, demo banner. Remaining: .whatif-stats result cards + .suggestions buttons + mint button 3.77:1.",
+  "rca_of_the_issue": "The iteration-9 CSS block enumerates specific classes for dark mode. '.whatif-stats>div' (auth.css line 145, background #fbfdfc) and '.suggestions button' (App.css, background #fff, shares the base rule with .prompt which WAS overridden) were never included, so they keep light-mode backgrounds while inheriting the dark-theme text color from body -> near-zero contrast on the What-If result cards. Reproduce: login, /settings -> theme-dark, go to /whatif, click [data-testid='whatif-run-button'], the 'CURRENT PLAN' value is invisible."
+}

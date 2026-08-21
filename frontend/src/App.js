@@ -43,7 +43,10 @@ function Shell({ children, mode }) {
   const navigate = useNavigate();
   const { user, logout, lock } = useAuth();
   const isDemo = mode === 'demo';
-  const active = nav.find((n) => (isDemo ? `/demo${n.path === '/' ? '' : n.path}` : n.path) === location.pathname) || nav[0];
+  const raw = location.pathname.replace(/^\/demo/, '') || '/';
+  let active = nav.find((n) => n.path === raw);
+  if (!active && raw.startsWith('/learn/')) active = nav.find((n) => n.path === '/learn');
+  if (!active) active = nav[0];
   const displayName = isDemo ? 'Aarav Sharma' : (user?.name || 'FINAURA AI user');
   const displayInitials = isDemo ? 'AS' : initials(displayName);
   const goToNav = (path) => navigate(isDemo ? `/demo${path === '/' ? '' : path}` : path);
@@ -966,7 +969,7 @@ function useOverview(mode) {
 function LoadingScreen() {
   return (
     <div className="loading-screen">
-      <div className="brand"><span className="brand-mark">f</span><span>finaura</span></div>
+      <div className="brand"><span className="brand-mark">f</span><span>FINAURA <b>AI</b></span></div>
       <p>Building your financial picture…</p>
     </div>
   );
@@ -988,9 +991,11 @@ function AppWorkspace({ mode }) {
   const isDemo = mode === 'demo';
   if (!data) return <LoadingScreen />;
   const raw = location.pathname.replace(/^\/demo/, '') || '/';
-  // Article detail routes like /learn/:id
+  // Article detail routes like /learn/:id — extract id from the path so ArticleDetail
+  // doesn't need useParams (this route lives under a catch-all).
   if (raw.startsWith('/learn/') && raw.length > 7) {
-    return <Shell mode={mode}><ArticleDetail isDemo={isDemo}/></Shell>;
+    const articleId = raw.slice(7);
+    return <Shell mode={mode}><ArticleDetail isDemo={isDemo} articleId={articleId}/></Shell>;
   }
   const pages = {
     '/': <Dashboard data={data} isDemo={isDemo} />,

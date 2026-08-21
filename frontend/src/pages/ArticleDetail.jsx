@@ -4,8 +4,9 @@ import { api } from '../lib/api';
 import { ArrowLeft, Sparkles } from 'lucide-react';
 import '../auth.css';
 
-export default function ArticleDetail({ isDemo }) {
-  const { id } = useParams();
+export default function ArticleDetail({ isDemo, articleId }) {
+  const params = useParams();
+  const id = articleId || params.id;
   const navigate = useNavigate();
   const [article, setArticle] = useState(null);
   const [error, setError] = useState('');
