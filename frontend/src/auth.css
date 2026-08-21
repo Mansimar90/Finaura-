@@ -119,3 +119,11 @@
 .upload-done p{color:var(--muted);margin-bottom:20px;font-size:13px}
 
 @media(max-width:720px){.mapping-grid{grid-template-columns:1fr}.upload-actions{flex-direction:column-reverse}.upload-actions button{width:100%;justify-content:center}}
+
+/* Ask Finaura model picker */
+.model-picker{margin-left:auto;display:flex;gap:6px;background:#f4f7f5;padding:4px;border-radius:20px}
+.model-pill{border:0;background:transparent;padding:6px 12px;border-radius:16px;font:600 11px 'Plus Jakarta Sans';color:#556b60;cursor:pointer;transition:background .2s,color .2s}
+.model-pill:hover:not(:disabled){color:var(--ink)}
+.model-pill.active{background:#0f172a;color:#fff}
+.model-pill:disabled{opacity:.5;cursor:not-allowed}
+.msg-model-tag{display:inline-block;font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:.1em;font-weight:700;margin-bottom:4px}

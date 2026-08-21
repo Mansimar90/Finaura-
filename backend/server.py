@@ -112,6 +112,13 @@ class ProfileInput(BaseModel):
 
 class ChatInput(BaseModel):
     message: str
+    model: Optional[str] = "openai"  # "openai" | "claude"
+
+
+CHAT_MODELS = {
+    "openai": {"provider": "openai", "name": "gpt-5.4", "label": "OpenAI GPT-5.4"},
+    "claude": {"provider": "anthropic", "name": "claude-sonnet-5", "label": "Claude Sonnet 5"},
+}
 
 
 # ============ Public demo endpoint ============
@@ -313,12 +320,23 @@ async def _system_prompt(user: Optional[dict]) -> str:
     goals = [_clean(g) for g in await db.finaura_goals.find({"user_id": uid}).to_list(20)]
     txns = [_clean(t) for t in await db.finaura_transactions.find({"user_id": uid}).to_list(50)]
     goals_summary = ", ".join([f"{g['name']} (₹{g.get('current_amount',0)}/₹{g.get('target_amount',0)}, {g.get('priority','Medium')})" for g in goals]) or "no goals yet"
-    financial_context = (
-        f"monthly_income ₹{profile.get('monthly_income', 'unknown')}, "
-        f"monthly_expenses ₹{profile.get('monthly_expenses', 'unknown')}, "
-        f"current_savings ₹{profile.get('current_savings', 'unknown')}, "
-        f"debt ₹{profile.get('debt', 'unknown')}."
-    )
+    # Use DEMO_SUMMARY as the answer context when the user has loaded demo data
+    # but hasn't yet entered their own profile numbers — matches what the dashboard shows.
+    if user.get("has_demo_data") and profile == {}:
+        s = DEMO_SUMMARY
+        financial_context = (
+            f"monthly_income ₹{s['income']}, monthly_expenses ₹{s['expenses']}, "
+            f"current_savings ₹{s['current_savings']}, investments ₹{s['investments']}, "
+            f"debt ₹{s['debt']}, net_worth ₹{s['net_worth']}, health_score {s['health_score']} "
+            f"(these are the demo dataset numbers shown on their dashboard)."
+        )
+    else:
+        financial_context = (
+            f"monthly_income ₹{profile.get('monthly_income', 'unknown')}, "
+            f"monthly_expenses ₹{profile.get('monthly_expenses', 'unknown')}, "
+            f"current_savings ₹{profile.get('current_savings', 'unknown')}, "
+            f"debt ₹{profile.get('debt', 'unknown')}."
+        )
     return (
         f"You are Ask Finaura, a warm, concise financial education assistant. "
         f"You are speaking with {user.get('name') or 'a Finaura user'}. Their profile: {financial_context} "
@@ -342,17 +360,37 @@ async def chat(payload: ChatInput, request: Request):
         except HTTPException:
             user_doc = None
     system = await _system_prompt(user_doc)
-    session_id = f"finaura-{str(user_doc['_id']) if user_doc else 'demo'}"
+    model_cfg = CHAT_MODELS.get(payload.model or "openai", CHAT_MODELS["openai"])
+    session_id = f"finaura-{str(user_doc['_id']) if user_doc else 'demo'}-{model_cfg['provider']}"
 
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta
+    from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
 
     async def stream():
-        chat_client = LlmChat(api_key=key, session_id=session_id, system_message=system).with_model("openai", "gpt-5.4")
+        chat_client = LlmChat(api_key=key, session_id=session_id, system_message=system).with_model(
+            model_cfg["provider"], model_cfg["name"]
+        )
         async for event in chat_client.stream_message(UserMessage(text=payload.message)):
             if isinstance(event, TextDelta):
                 yield event.content
+            elif isinstance(event, StreamDone):
+                break
 
-    return StreamingResponse(stream(), media_type="text/plain", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        stream(),
+        media_type="text/plain",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Model": model_cfg["label"]},
+    )
+
+
+@api_router.get("/chat/models")
+async def chat_models():
+    return {
+        "models": [
+            {"id": key, "label": cfg["label"], "provider": cfg["provider"]}
+            for key, cfg in CHAT_MODELS.items()
+        ],
+        "default": "openai",
+    }
 
 
 # ============ Config info endpoint (frontend uses this to know which OAuth to show) ============

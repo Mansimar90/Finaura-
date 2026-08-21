@@ -500,19 +500,29 @@ function Learn() {
 
 function Ask({ isDemo, userName }) {
   const [message, setMessage] = useState('');
-  const [messages, setMessages] = useState([]); // [{role:'user'|'assistant', text}]
+  const [messages, setMessages] = useState([]); // [{role:'user'|'assistant', text, model?}]
   const [loading, setLoading] = useState(false);
+  const [model, setModel] = useState(() => localStorage.getItem('finaura_chat_model') || 'openai');
+  const [availableModels, setAvailableModels] = useState([
+    { id: 'openai', label: 'OpenAI GPT-5.4', provider: 'openai' },
+    { id: 'claude', label: 'Claude Sonnet 5', provider: 'anthropic' },
+  ]);
+  useEffect(() => {
+    api.get('/chat/models').then((r) => setAvailableModels(r.data.models)).catch(() => {});
+  }, []);
+  const activeModelLabel = availableModels.find((m) => m.id === model)?.label || model;
+  const chooseModel = (id) => { setModel(id); localStorage.setItem('finaura_chat_model', id); };
   const ask = async (q = message) => {
     if (!q || loading) return;
     setMessage('');
-    setMessages((m) => [...m, { role: 'user', text: q }, { role: 'assistant', text: '' }]);
+    setMessages((m) => [...m, { role: 'user', text: q }, { role: 'assistant', text: '', model }]);
     setLoading(true);
     try {
       const token = localStorage.getItem('finaura_token');
       const r = await fetch(`${API}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ message: q }),
+        body: JSON.stringify({ message: q, model }),
       });
       const reader = r.body.getReader();
       const dec = new TextDecoder();
@@ -522,14 +532,14 @@ function Ask({ isDemo, userName }) {
         const chunk = dec.decode(value);
         setMessages((m) => {
           const copy = [...m];
-          copy[copy.length - 1] = { role: 'assistant', text: (copy[copy.length - 1].text || '') + chunk };
+          copy[copy.length - 1] = { ...copy[copy.length - 1], text: (copy[copy.length - 1].text || '') + chunk };
           return copy;
         });
       }
     } catch {
       setMessages((m) => {
         const copy = [...m];
-        copy[copy.length - 1] = { role: 'assistant', text: "I'm unable to reach the assistant right now. Your data is still available across Finaura." };
+        copy[copy.length - 1] = { ...copy[copy.length - 1], text: "I'm unable to reach the assistant right now. Your data is still available across Finaura." };
         return copy;
       });
     }
@@ -545,18 +555,37 @@ function Ask({ isDemo, userName }) {
         <Card className="chat-card">
           <div className="chat-head">
             <div className="ai-avatar"><Sparkles size={19} /></div>
-            <div><strong>Finaura intelligence</strong><small>Knows your {isDemo ? 'demo' : ''} profile · Always educational</small></div>
-            <span className="online"><i></i> Ready</span>
+            <div>
+              <strong>Finaura intelligence</strong>
+              <small>Knows your {isDemo ? 'demo' : ''} profile · Always educational</small>
+            </div>
+            <div className="model-picker" data-testid="model-picker">
+              {availableModels.map((m) => (
+                <button
+                  key={m.id}
+                  data-testid={`model-choice-${m.id}`}
+                  className={`model-pill ${model === m.id ? 'active' : ''}`}
+                  onClick={() => chooseModel(m.id)}
+                  title={m.label}
+                  disabled={loading}
+                >
+                  {m.id === 'claude' ? 'Claude' : 'GPT'}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="chat-body" data-testid="chat-body">
             {messages.length === 0 && (
               <div className="message assistant" data-testid="chat-welcome">
                 <strong>Ask me about your money{userName ? `, ${userName.split(' ')[0]}` : ''}.</strong>
-                <p>I can help you understand your trends, compare months, think through goals, or explain financial concepts.</p>
+                <p>I can help you understand your trends, compare months, think through goals, or explain financial concepts. Currently answering with <b>{activeModelLabel}</b>.</p>
               </div>
             )}
             {messages.map((m, i) => (
               <div key={i} className={`message ${m.role}`} data-testid={`chat-message-${m.role}-${i}`}>
+                {m.role === 'assistant' && m.model && (
+                  <small className="msg-model-tag" data-testid={`msg-model-${i}`}>{availableModels.find((x) => x.id === m.model)?.label || m.model}</small>
+                )}
                 <p>{m.text || (loading && i === messages.length - 1 ? '…' : '')}</p>
               </div>
             ))}
@@ -568,7 +597,7 @@ function Ask({ isDemo, userName }) {
             ))}
           </div>
           <div className="chat-input">
-            <input data-testid="ask-finaura-input" value={message} onChange={(e) => setMessage(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && ask()} placeholder="Ask anything about your financial life…" />
+            <input data-testid="ask-finaura-input" value={message} onChange={(e) => setMessage(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && ask()} placeholder={`Ask ${activeModelLabel} anything…`} />
             <button data-testid="ask-finaura-send-button" onClick={() => ask()}><Send size={17} /></button>
           </div>
           <small className="disclaimer">Finaura provides education, not investment orders. {isDemo && 'This conversation uses demo data.'}</small>

@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 6 testing of the Claude Sonnet 5 multi-model addition to Ask Finaura. Backend: created /app/backend/tests/test_chat_models.py (9 tests) covering GET /api/chat/models, anonymous + authenticated streaming for openai and claude, unknown-model fallback, missing-model default, and invalid-token graceful degradation — all 9 pass. Full regression suite (/app/backend/tests, 72 tests) = 63 passed, 6 skipped, 0 failed. Frontend: verified model picker on /demo/ask and /ask (active class flip, placeholder swap, localStorage persistence across reload), per-message msg-model-N tags for both models with history preserved, plus regressions (sign-in -> dashboard, statements CSV upload/column-mapping, passkey section in Settings, demo banner, sign-out clearing token). One pre-existing personalisation gap found in the chat system prompt.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/chat (_system_prompt)",
+        "issue": "For demo-data users (has_demo_data=true, empty profile{}) the system prompt injects 'monthly_income unknown, monthly_expenses unknown...' so the assistant replies \"I don't have your monthly income on file\" even though GET /api/financial/overview reports income 185000 / expenses 123000 for the same user. _system_prompt lacks the DEMO_SUMMARY fallback that overview() has (server.py L175-178). Reproduced with testuser@finaura.dev on both openai and claude."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_chat_models.py",
+    "/app/test_reports/pytest/chat_models.xml",
+    "/app/test_reports/pytest/iteration6.xml"
+  ],
+  "action_items": [
+    "Give _system_prompt the same demo-data fallback as overview(): when has_demo_data and profile=={} inject DEMO_SUMMARY numbers so Claude/GPT answers match the dashboard instead of saying the profile is unknown."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~430 lines and fine, but the demo-summary fallback logic is now duplicated conceptually between overview() and _system_prompt() — extract a single `resolve_summary(user, goals)` helper to keep chat context and dashboard numbers in sync (DRY).",
+    "CHAT_MODELS.get(payload.model or 'openai', CHAT_MODELS['openai']) silently falls back for unknown ids; consider echoing the resolved id in X-Model (already the label) or returning 422 for typo'd model ids so clients don't silently get the wrong provider.",
+    "Frontend Ask(): the fetch stream has no r.ok check — an HTTP 503 (missing EMERGENT_LLM_KEY) would render the error body as the assistant reply instead of the friendly fallback message."
+  ],
+  "updated_files": ["/app/backend/tests/test_chat_models.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None persisted. Uploaded a 2-row CSV (TEST_COFFEE/TEST_SALARY) to the statements column-mapping step only; import was not confirmed, so no transactions were created.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "testuser@finaura.dev / testpass123",
+  "context_for_next_testing_agent": "Login response key is 'access_token' (not 'token'). Sign-in form testids are login-email-input/login-password-input/login-submit-button. Chat streaming takes 5-20s; poll until the assistant text stops growing rather than breaking on first non-empty chunk. Model picker testids: model-picker, model-choice-openai, model-choice-claude, msg-model-{index}. X-Model response header carries the resolved label ('OpenAI GPT-5.4' / 'Claude Sonnet 5').",
+  "rca_of_the_issue": "Personalisation gap: overview() branches to DEMO_SUMMARY when has_demo_data && profile=={} (server.py L175), but _system_prompt() (L316) reads only user['profile'], producing 'unknown' values in the LLM context. Fix by sharing one summary resolver."
+}
