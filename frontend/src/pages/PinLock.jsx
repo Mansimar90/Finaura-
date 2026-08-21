@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { Fingerprint } from 'lucide-react';
 import { useAuth } from '../lib/auth';
+import { unlockWithPasskey, passkeysSupported } from '../lib/passkey';
 import '../auth.css';
 
 /**
@@ -19,6 +21,18 @@ export default function PinLock({ mode = 'verify' }) {
   const [phase, setPhase] = useState(mode === 'set' ? 'enter' : 'verify'); // enter -> confirm -> done
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const canUsePasskey = mode === 'verify' && user?.has_passkey && passkeysSupported();
+
+  const tryPasskey = async () => {
+    setError('');
+    try {
+      await unlockWithPasskey();
+      sessionStorage.setItem('finaura_unlocked', '1');
+      window.location.assign(nextPath);
+    } catch (err) {
+      setError(err?.message || 'Passkey unlock cancelled.');
+    }
+  };
 
   const handleKey = useCallback((digit) => {
     setError('');
@@ -120,6 +134,11 @@ export default function PinLock({ mode = 'verify' }) {
         </div>
 
         <div className="pin-actions">
+          {canUsePasskey && (
+            <button data-testid="unlock-with-passkey-button" onClick={tryPasskey}>
+              <Fingerprint size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} /> Use passkey
+            </button>
+          )}
           {mode === 'set' && (
             <button data-testid="skip-pin-button" onClick={() => navigate('/', { replace: true })}>Skip for now</button>
           )}

@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { LayoutDashboard, Wallet, FileText, TrendingUp, Target, Activity, BookOpen, Sparkles, ShieldCheck, Bell, ChevronRight, Upload, Plus, ArrowUpRight, ArrowDownRight, Send, Check, LockKeyhole, Trash2, CircleHelp, LogOut, Lock, KeyRound } from 'lucide-react';
+import { LayoutDashboard, Wallet, FileText, TrendingUp, Target, Activity, BookOpen, Sparkles, ShieldCheck, Bell, ChevronRight, Upload, Plus, ArrowUpRight, ArrowDownRight, Send, Check, LockKeyhole, Trash2, CircleHelp, LogOut, Lock, KeyRound, Fingerprint } from 'lucide-react';
 import '@/App.css';
 import './auth.css';
 import { AuthProvider, useAuth } from './lib/auth';
 import { api, API, formatApiError } from './lib/api';
+import { registerPasskey, listPasskeys, removePasskey, passkeysSupported } from './lib/passkey';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import ForgotPassword from './pages/ForgotPassword';
@@ -14,6 +15,7 @@ import ResetPassword from './pages/ResetPassword';
 import VerifyEmail from './pages/VerifyEmail';
 import Onboarding from './pages/Onboarding';
 import PinLock from './pages/PinLock';
+import StatementUpload from './pages/StatementUpload';
 
 const nav = [
   {label:'Dashboard',path:'/',icon:LayoutDashboard},
@@ -270,32 +272,22 @@ function Statements({ data, isDemo, reload }) {
     <>
       <div className="page-intro">
         <div><div className="eyebrow">Enter · Understand · Organize</div><h2>Statements</h2><p>No bank account connection required. Bring your history, your way.</p></div>
-        <button data-testid="upload-statement-button" className="primary-btn" onClick={importDemo}><Upload size={17} /> {isDemo ? 'View demo' : 'Import demo six-month data'}</button>
+        <button data-testid="demo-shortcut-button" className="outline-btn" onClick={importDemo}><Plus size={17} /> {isDemo ? 'View demo' : 'Load six-month demo'}</button>
       </div>
       {uploaded && <div className="success-banner" data-testid="statement-upload-success"><Check size={18} /> Demo statement imported — review the categorization before confirming.</div>}
-      <div className="upload-grid">
-        <Card className="upload-card">
-          <div className="upload-icon"><Upload size={22} /></div>
-          <h3>Drop a statement here</h3>
-          <p>PDF, CSV or Excel · up to 10 MB</p>
-          <button data-testid="simulate-upload-button" className="outline-btn" onClick={importDemo}>Use demo six-month data</button>
+      {!isDemo && (
+        <Card className="statement-upload-card">
+          <SectionTitle eyebrow="Import your own data" title="Upload a bank statement" />
+          <StatementUpload onImported={() => reload?.()} />
         </Card>
-        <Card>
-          <SectionTitle eyebrow="How Finaura works" title="You stay in control" />
-          {[['01', 'Import', 'Bring in a file or enter a transaction manually.'],
-            ['02', 'Review', 'Finaura suggests a category — never silently.'],
-            ['03', 'Understand', 'See your patterns across six months.']].map((x) => (
-            <div className="step" key={x[0]}><span>{x[0]}</span><div><strong>{x[1]}</strong><p>{x[2]}</p></div></div>
-          ))}
-        </Card>
-      </div>
+      )}
       <Card>
         <SectionTitle eyebrow={`${txns.length} transactions`} title="Review your imported data" action={<span className="review-pill"><span></span> Needs your review</span>} />
         <div className="table-wrap">
           <table>
             <thead><tr><th>Date</th><th>Description</th><th>Type</th><th>Category</th><th>Amount</th></tr></thead>
             <tbody>
-              {txns.length === 0 && <tr><td colSpan={5} style={{ textAlign: 'center', color: '#8b9995', padding: '30px 0' }}>No transactions yet. Import the demo above to get started.</td></tr>}
+              {txns.length === 0 && <tr><td colSpan={5} style={{ textAlign: 'center', color: '#8b9995', padding: '30px 0' }}>No transactions yet. Upload a statement or load the demo above to get started.</td></tr>}
               {txns.map((t) => (
                 <tr key={t.id}>
                   <td>{t.date}</td>
@@ -593,6 +585,55 @@ function Ask({ isDemo, userName }) {
   );
 }
 
+function PasskeySection() {
+  const { refreshMe } = useAuth();
+  const [items, setItems] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const supported = passkeysSupported();
+  const load = async () => { try { setItems(await listPasskeys()); } catch {} };
+  useEffect(() => { load(); }, []);
+  const add = async () => {
+    setBusy(true); setError('');
+    try {
+      const label = window.prompt('Name this passkey (e.g. "iPhone", "MacBook")', 'This device') || 'Passkey';
+      await registerPasskey(label);
+      await load();
+      await refreshMe();
+    } catch (err) {
+      setError(err?.response?.data?.detail || err?.message || 'Could not register passkey.');
+    } finally { setBusy(false); }
+  };
+  const remove = async (prefix) => {
+    if (!window.confirm('Remove this passkey?')) return;
+    try { await removePasskey(prefix); await load(); await refreshMe(); } catch (err) { setError(err?.message || 'Remove failed.'); }
+  };
+  return (
+    <div className="account-card" data-testid="passkey-section">
+      <h3>Passkeys (Face ID · Touch ID · Windows Hello)</h3>
+      <p style={{ fontSize: 12, color: '#556b60', margin: '0 0 12px', lineHeight: 1.55 }}>
+        Passkeys let you unlock Finaura with your face, fingerprint, or a hardware security key — alongside your PIN.
+      </p>
+      {!supported && <div className="auth-provider-badge" data-testid="passkey-not-supported">Passkeys aren't available in this browser. Try Safari (iOS/macOS), Chrome, or Edge on a device with biometrics.</div>}
+      {error && <div className="auth-error" data-testid="passkey-error">{error}</div>}
+      <div className="rows">
+        {items.length === 0 && <div><span>No passkeys yet</span><strong style={{ color: '#8b9995' }}>Add one below</strong></div>}
+        {items.map((p) => (
+          <div key={p.id}>
+            <span>{p.label} <small style={{ color: '#94a3b8', marginLeft: 6 }}>· {p.id}</small></span>
+            <strong><button data-testid={`remove-passkey-${p.id}`} className="pill-btn" onClick={() => remove(p.id)}><Trash2 size={13}/> Remove</button></strong>
+          </div>
+        ))}
+      </div>
+      {supported && (
+        <button className="pill-btn mint" data-testid="add-passkey-button" onClick={add} disabled={busy} style={{ marginTop: 12 }}>
+          <Fingerprint size={13}/> {busy ? 'Registering…' : 'Add a passkey'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function Settings({ isDemo, reload }) {
   const { user, removePin, setPin, logout, refreshMe, formatApiError } = useAuth();
   const navigate = useNavigate();
@@ -652,6 +693,7 @@ function Settings({ isDemo, reload }) {
           </div>
         </div>
       )}
+      {!isDemo && <PasskeySection />}
       <div className="settings-grid">
         <Card>
           <SectionTitle eyebrow="Privacy principles" title="Built with care" />

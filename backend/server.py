@@ -18,6 +18,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
 
 from auth import build_auth_router, make_get_current_user, ensure_indexes, public_user
+from passkeys import build_passkey_router, ensure_passkey_indexes
+from statements import build_statements_router
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("finaura")
@@ -370,6 +372,8 @@ async def auth_config():
 # ============ Wire routers & CORS ============
 
 app.include_router(build_auth_router(db), prefix="/api")
+app.include_router(build_passkey_router(db, get_current_user), prefix="/api")
+app.include_router(build_statements_router(db, get_current_user), prefix="/api")
 app.include_router(api_router)
 
 app.add_middleware(
@@ -385,6 +389,7 @@ app.add_middleware(
 async def _startup():
     try:
         await ensure_indexes(db)
+        await ensure_passkey_indexes(db)
     except Exception:
         log.exception("Failed to create indexes")
 

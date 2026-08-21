@@ -97,3 +97,25 @@
 /* Modal shared with auth */
 .modal .auth-field{margin-bottom:12px}
 .modal .auth-btn{margin-top:6px}
+
+/* Statement upload */
+.statement-upload{padding:6px 2px}
+.statement-upload-card{margin-bottom:14px}
+.upload-dropzone{border:1.5px dashed #cbd5c9;border-radius:12px;padding:36px 24px;text-align:center;background:#fbfdfc}
+.upload-dropzone h3{font:600 18px Outfit;margin:6px 0}
+.upload-dropzone p{color:var(--muted);font-size:12px;margin:0 0 16px}
+.upload-dropzone input[type=file]{display:inline-block;font:12px 'Plus Jakarta Sans';cursor:pointer}
+.upload-stepbar{display:flex;align-items:center;gap:10px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#94a3b8;margin-bottom:16px}
+.upload-stepbar .active{color:var(--ink);font-weight:700}
+.mapping-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin:14px 0 20px}
+.mapping-grid select{width:100%;padding:11px;border-radius:8px;border:1px solid #d9e4df;background:#fbfdfc;font:13px 'Plus Jakarta Sans';color:var(--ink)}
+.preview-table{margin:14px 0 8px}
+.preview-table .eyebrow{margin-bottom:8px}
+.preview-table table{font-size:11px}
+.preview-table td{padding:8px 10px}
+.upload-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}
+.upload-done{text-align:center;padding:30px}
+.upload-done h3{font:600 20px Outfit;margin:12px 0 6px}
+.upload-done p{color:var(--muted);margin-bottom:20px;font-size:13px}
+
+@media(max-width:720px){.mapping-grid{grid-template-columns:1fr}.upload-actions{flex-direction:column-reverse}.upload-actions button{width:100%;justify-content:center}}

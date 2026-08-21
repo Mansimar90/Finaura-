@@ -76,6 +76,7 @@ def public_user(doc: dict) -> dict:
         "email_verified": bool(doc.get("email_verified", False)),
         "has_password": bool(doc.get("password_hash")),
         "has_pin": bool(doc.get("pin_hash")),
+        "has_passkey": bool(doc.get("has_passkey", False)),
         "providers": doc.get("providers", []),
         "onboarding_done": bool(doc.get("onboarding_done", False)),
         "has_demo_data": bool(doc.get("has_demo_data", False)),

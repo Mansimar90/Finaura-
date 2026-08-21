@@ -1,0 +1,48 @@
+{
+  "summary": "Phase 3 (WebAuthn passkeys + real statement upload) tested end-to-end. Backend: 55 pytest cases across new test_phase3.py (22), test_phase3_passkey_state.py (1) plus phase-2 regression suites (33) — 54 passed / 1 failed. Frontend: full Playwright E2E — sign-in, Statements CSV upload (preview → map → review → import → transactions visible), unsupported-file error, Settings passkey section, real passkey registration via Chrome DevTools virtual authenticator (register → list → DELETE → has_passkey reset), goal creation, Ask Finaura streaming chat, sign-out, /demo public access. Only defect found: PDF DR/CR type detection mis-classifies every row as Income.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/statements/preview & /parse (PDF)", "issue": "parse_pdf() DR/CR hint detection uses padded substrings (' dr ', ' cr ') so a line-terminal marker like '01/08/2026 SWIGGY DINNER 450.00 DR' is never matched -> _detect_type() sees a positive amount and returns Income. Result: every PDF debit row is imported as Income (and category becomes 'Income'). The marker also leaks into the description ('SWIGGY DINNER DR'). Repro: tests/test_phase3.py::TestStatements::test_pdf_preview (reportlab-generated plain PDF). Fix: match with word-boundary regex r'\\b(dr|debit|withdrawal)\\b' / r'\\b(cr|credit|deposit)\\b' on the line and strip the trailing DR/CR token from the description."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Statements → Upload a bank statement", "issues": ["The dropzone uses the raw native <input type=file> ('Choose File / No file chosen') inside an otherwise polished card — visually inconsistent with the rest of the design system; wrap it in a styled label/button and add drag-and-drop.", "The dropzone does not visually shrink/hide after import; only the success panel replaces it (acceptable, noted for polish)."]},
+      {"screen": "Goals & Priorities", "issues": ["Goal cards have no edit/delete affordance even though PATCH/DELETE /api/goals/{id} exist — a created goal cannot be removed from the UI (pre-existing gap, not Phase 3)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase3.py",
+    "/app/backend/tests/test_phase3_passkey_state.py",
+    "/app/backend/tests/cleanup_phase3.py",
+    "/app/test_reports/pytest/phase3_final.xml"
+  ],
+  "action_items": [
+    "Fix parse_pdf() DR/CR detection (word-boundary regex) and strip the DR/CR token from the extracted description — currently all PDF debits import as Income.",
+    "Optional polish: style the statement file input as a real dropzone (drag & drop) instead of the native Choose File control.",
+    "Optional: expose goal edit/delete in the Goals UI (backend already supports it)."
+  ],
+  "critical_code_review_comments": [
+    "statements.py POST /statements/parse has no size guard — only /preview enforces the 10 MB limit; a client can POST a 100 MB file straight to /parse. Duplicate the size/415 checks or extract a shared validator.",
+    "statements.py confirm-import skips rows where amount is falsy via `not t.get('amount')` — a legitimate 0-amount row and a missing key are treated the same; prefer explicit `t.get('amount') in (None, '')` plus float() validation, and validate the transaction shape with a Pydantic model instead of list[dict].",
+    "confirm-import trusts client-supplied type/category strings without an enum check — a crafted payload can insert arbitrary category values that break the dashboard aggregations.",
+    "passkeys.py register/complete consumes (marks used) the challenge before verification succeeds, so a single failed browser attempt forces the user to restart from /register/begin. Acceptable for replay safety, but surface a clearer 'please try again' message in the UI.",
+    "passkeys.py authenticate/complete returns {ok:true} but does not mint/refresh any token — unlock state is purely client-side (sessionStorage), so a caller can skip the passkey step entirely. Consider returning a short-lived unlock token if the lock screen is meant to be a real gate.",
+    "PDF parsing dependency (pdfplumber) is imported lazily and raises 500 when missing; return 503/415 with a clearer message instead of 500."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase3.py",
+    "/app/backend/tests/test_phase3_passkey_state.py",
+    "/app/backend/tests/cleanup_phase3.py"
+  ],
+  "success_rate": {"backend": "98% (54/55)", "frontend": "100%"},
+  "seed_data_creation": "Temporary only: 3 CSV-imported txns + TEST_IMPORT_CHECK txn + TEST_QA Goal + one virtual-authenticator passkey. All removed (cleanup_phase3.py + passkey DELETE); testuser@finaura.dev is back to has_passkey=false with no leftover QA rows.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "testuser@finaura.dev / testpass123 (from /app/memory/test_credentials.md) — login returns {access_token}, not {token}; tests accept both.",
+  "context_for_next_testing_agent": "Verified this iteration: (1) all 5 passkey endpoints 401 without JWT; register/begin returns rp.id=wealth-insights-43.preview.emergentagent.com, 43+ char challenge, real user id/email; register/complete with bogus attestation -> 400; authenticate/begin -> 404 with no creds; DELETE unknown prefix -> 404; webauthn_challenges TTL index (expires_at, expireAfterSeconds=0) present. (2) Full passkey happy path DOES work headless via CDP: `cdp = await page.context.new_cdp_session(page); await cdp.send('WebAuthn.enable'); await cdp.send('WebAuthn.addVirtualAuthenticator', {'options': {'protocol':'ctap2','transport':'internal','hasResidentKey':True,'hasUserVerification':True,'isUserVerified':True,'automaticPresenceSimulation':True}})` then accept the window.prompt dialog — registration succeeded and appeared in the list. (3) Statements: CSV preview (kind=csv, total_rows=6, guess date/debit/credit), parse (6 txns, 1 Income 80000, categories Food/Shopping/Transport/Entertainment/Rent all correct), Excel preview+parse, confirm-import persists and shows in /api/financial/overview (no _id leakage), .txt -> 415 (surfaced in UI as upload-error), >10MB -> 413. (4) UI: statement-upload, demo-shortcut-button, upload-mapping-step with pre-filled guesses, review-txn-N, upload-import-button -> 'Imported 3 transactions', rows visible in the table below; passkey-section renders (Chromium supports WebAuthn so passkey-not-supported badge is absent and add-passkey-button shows); unlock-with-passkey-button correctly not rendered (no PIN/passkey). Only open bug: PDF DR/CR -> Income. Ask Finaura chat input testid is ask-finaura-input and the endpoint streams plain text (not JSON) — use requests stream/r.text in pytest.",
+  "rca_of_the_issue": "parse_pdf() derives the debit/credit hint with `' dr ' in lowered` style substring checks. Bank statement lines almost always end with the DR/CR marker, so the padded substring never matches, hint stays None, and _detect_type(positive amount, None) returns ('Income', amount). Consequence: 100% of PDF-extracted debits are classified as Income and inflate income totals after import. Reproduce with tests/test_phase3.py::TestStatements::test_pdf_preview."
+}
