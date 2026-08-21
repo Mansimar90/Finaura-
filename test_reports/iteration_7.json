@@ -1,0 +1,53 @@
+{
+  "summary": "Phase-4 full test pass. Backend: new pytest suite /app/backend/tests/test_phase4.py (27 tests) covering memories CRUD+upsert+isolation, learn articles/daily, what-if simulator, expanded profile persistence, chat memory retrieval + FY 2025-26 tax context, plus regression on demo/auth/goals/passkey/statements — 27/27 pass. Existing Phase-2/3 suites re-run: 63 passed / 6 skipped. Frontend (Playwright, public URL, real login): branding, Profile CRUD+persistence, Goals create/edit/delete, Daily Learn card, What-If (line chart, demo disabled), Analysis LineChart, Settings (account name, passkey, AI memory add/delete/clear, theme light/dark/system), Voice mic + read-aloud UI, memory-aware chat answer (₹90,000), demo mode banner/ask/profile-redirect, sign-out — all pass EXCEPT Learn article detail, which is broken (404 'Article not found') for every article in both auth and demo mode.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/memories", "issue": "Upsert overwrites created_at with now() and assigns a brand-new uuid id on every re-post, so the previously returned id becomes stale and original creation time is lost ($setOnInsert _created_first is written but never returned)."},
+      {"endpoint": "GET /api/financial/overview", "issue": "Once a user's profile is populated, history is returned as all-zero months while summary uses profile values, so the dashboard cash-flow chart is flat/empty and the 'Worth noticing' insight prints a nonsensical line ('After dipping in June, you saved ₹90,000 this month')."},
+      {"endpoint": "POST /api/chat", "issue": "session_id is a fixed string per user+provider ('finaura-{uid}-{provider}') with no reset path, so LLM conversation context grows unbounded across sessions and stale answers can persist even after memories/profile change."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ArticleDetail (/learn/:id, /demo/learn/:id)", "issue": "CRITICAL: every Learn article opens with 'Article not found.'. RCA: AppWorkspace does manual pathname routing under a catch-all route, so useParams().id in ArticleDetail is undefined and the app requests GET /api/learn/articles/undefined (404, verified in network log). Backend detail endpoint works fine. Fix: derive the id in AppWorkspace (raw.split('/learn/')[1]) and pass it as a prop, or register a real <Route path='/learn/:id'>. This also blocks article-title/article-body, article-back-button and the article 'Ask FINAURA AI' prompt-seed flow.", "selector": "[data-testid='article-title'], [data-testid='article-error']", "priority": "CRITICAL"},
+      {"component": "LoadingScreen (App.js:969)", "issue": "Still renders lowercase brand 'finaura' instead of 'FINAURA AI' — visible on every cold load / route transition.", "selector": ".loading-screen .brand", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dark theme (data-theme='dark') — global", "issues": [
+        ".primary-btn renders white text on rgb(226,232,240) (~1.2:1 contrast) — 'New goal', 'Add financial data', 'Save profile', 'Run simulation', 'Save' are effectively invisible in dark mode",
+        ".icon-btn keeps background rgb(255,255,255) with rgb(148,163,184) icons — goal edit/delete, memory delete and notification buttons appear as bright white blobs on dark cards",
+        ".theme-choice labels are rgb(226,232,240) on white background — Light/Dark/System labels unreadable",
+        ".pill-btn (non-mint variant, e.g. 'Sign out', 'Clear all AI memory', 'Change / remove') is light-on-white and unreadable",
+        ".memory-row and recharts Tooltip content boxes keep light backgrounds with light text",
+        "Dashboard 'Worth noticing' insight card heading disappears in dark mode"
+      ]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase4.py",
+    "/app/test_reports/pytest/phase4.xml",
+    "/app/test_reports/pytest/regression.xml"
+  ],
+  "action_items": [
+    "Fix Learn article routing: pass the article id from AppWorkspace into ArticleDetail (or add a real react-router param route) — currently every article 404s with /api/learn/articles/undefined",
+    "Add dark-theme overrides for .primary-btn, .icon-btn, .pill-btn, .theme-choice, .memory-row and recharts tooltip (multiple unreadable controls)",
+    "Rename lowercase 'finaura' in LoadingScreen to 'FINAURA AI'",
+    "Optional: keep 6-month history consistent with profile-derived summary so the dashboard cash-flow chart isn't flat once a profile is filled in"
+  ],
+  "critical_code_review_comments": [
+    "App.js AppWorkspace hand-rolls path parsing for /learn/:id while react-router is available — this is exactly why useParams() is empty in ArticleDetail; move article routing into the Routes tree.",
+    "App.js is 1074 lines and contains Dashboard, Goals, Learn, Ask, Settings and 4 settings sub-sections; split into src/pages/* modules for maintainability.",
+    "memories.py add_memory: $set spreads the whole doc (including a fresh uuid and created_at) on upsert — set id/created_at only via $setOnInsert.",
+    "server.py chat(): fixed session_id per user gives no way to reset conversation context; consider a client-supplied session id or reset endpoint."
+  ],
+  "updated_files": ["/app/backend/tests/test_phase4.py"],
+  "success_rate": {"backend": "100% (27/27 phase-4 + 63 regression)", "frontend": "88% (1 critical flow broken: Learn article detail)"},
+  "seed_data_creation": "testuser@finaura.dev profile updated via UI (name 'Test User P4', occupation QA Engineer, phone, location Mumbai, risk aggressive, interests SIP/Tax planning, monthly_income 90000) and demo statement re-imported; AI memories were added and then cleared (0 remaining); TEST_ goals created and deleted; a temporary second user TEST_phase4_*@qa.finaura.dev was registered and deleted by fixture teardown; theme reset to 'light'.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "testuser@finaura.dev / testpass123 (login response key is 'access_token', not 'token')",
+  "context_for_next_testing_agent": "Run `pytest /app/backend/tests/test_phase4.py -q` for phase-4 backend coverage. Frontend: Playwright dismisses window.confirm by default — register page.on('dialog', lambda d: d.accept()) before goal delete / memory delete / clear-all or the action silently cancels (this caused a false failure in this iteration). Only remaining open frontend defect after retest should be Learn article detail (/learn/{id}) and the dark-theme contrast set; verify article-title/article-body/article-back-button and the sessionStorage 'finaura_learn_prompt' Ask seeding once routing is fixed.",
+  "rca_of_the_issue": "Learn article 404: ArticleDetail reads useParams().id, but AppWorkspace renders it from a manual pathname check inside a catch-all route, so no route param named 'id' exists -> id === undefined -> GET /api/learn/articles/undefined returns 404 and the component shows 'Article not found.' Backend GET /api/learn/articles/{id} returns full body sections correctly for all 6 ids."
+}

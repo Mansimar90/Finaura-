@@ -1,0 +1,225 @@
+"""What-If financial simulator + Learn content + daily learn rotation."""
+from __future__ import annotations
+
+import hashlib
+from datetime import date, datetime, timezone
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from motor.motor_asyncio import AsyncIOMotorDatabase
+
+# --------- LEARN CONTENT ----------
+
+LEARN_ARTICLES = [
+    {
+        "id": "emergency-funds",
+        "category": "Personal finance",
+        "title": "Build your emergency fund first",
+        "read_minutes": 6,
+        "tags": ["saving", "safety", "basics"],
+        "art_variant": "mint",
+        "why_relevant": "Because your current cash reserve may be below 3 months of expenses.",
+        "body": [
+            {"heading": "Why an emergency fund matters", "text": "An emergency fund is the layer of savings that protects every other financial goal you have. Job loss, medical bills, a broken laptop, an urgent trip home — these things happen, and without a buffer they force you to sell investments, break FDs or take high-interest loans."},
+            {"heading": "How much is enough?", "text": "A common Indian rule of thumb: keep 3 to 6 months of essential monthly expenses (rent, EMIs, groceries, bills, insurance premiums) in easily accessible form. Freelancers or single earners with dependents typically aim for 6-12 months."},
+            {"heading": "Where to keep it", "text": "Split it across a savings account (1 month) + liquid mutual fund or sweep-in FD (rest). Avoid putting it in equity, ULIPs, or long-duration debt funds — you need liquidity, not returns."},
+            {"heading": "Building it up", "text": "If you don't have one yet, aim to save at least 20% of every incoming rupee into this bucket until you hit your target. Automate it via a monthly SIP or standing instruction so it happens before spending."},
+        ],
+    },
+    {
+        "id": "mutual-funds-101",
+        "category": "Investing basics",
+        "title": "Mutual Funds 101 for Indian investors",
+        "read_minutes": 8,
+        "tags": ["investing", "mutual-funds", "sip"],
+        "art_variant": "dark",
+        "why_relevant": "You have long-term goals but few investments recorded yet.",
+        "body": [
+            {"heading": "What is a mutual fund?", "text": "A mutual fund pools money from many investors to buy a diversified basket of stocks, bonds, gold or a mix. You don't buy the underlying — you buy units of the fund, whose NAV (net asset value) moves with the basket."},
+            {"heading": "SIP vs Lumpsum", "text": "A Systematic Investment Plan (SIP) invests a fixed amount every month (usually ₹500 upwards), buying more units when NAV is low and fewer when it's high — that's rupee-cost averaging. Lumpsum invests a single big amount and works best when you have a windfall AND markets look reasonable."},
+            {"heading": "Equity, Debt or Hybrid?", "text": "Equity funds invest primarily in stocks — higher volatility, better long-term returns. Debt funds hold bonds and are steadier. Hybrid funds mix both. Match the fund category to your goal horizon: <3 years lean debt, 5+ years lean equity."},
+            {"heading": "Expense ratio & exit load", "text": "Every mutual fund charges an annual expense ratio (0.2%-2.5%). Direct plans have lower expenses than Regular plans because there's no distributor commission. Exit loads (usually 1% if redeemed within 1 year) discourage short-term trading."},
+            {"heading": "Taxation in India (FY 2025-26)", "text": "Equity funds: STCG (<12m) is 20%; LTCG (>12m) is 12.5% above ₹1.25 lakh gains/year. Debt funds: gains are taxed at your slab rate irrespective of holding period. Verify with the Income Tax Department for the current assessment year."},
+        ],
+    },
+    {
+        "id": "compound-interest",
+        "category": "Long-term planning",
+        "title": "The quiet power of compounding",
+        "read_minutes": 5,
+        "tags": ["compounding", "long-term"],
+        "art_variant": "yellow",
+        "why_relevant": "A small monthly habit can become meaningful over time.",
+        "body": [
+            {"heading": "Interest on interest", "text": "Compounding means your returns earn returns. ₹10,000 invested at 12% grows to ₹31,058 in 10 years — but ₹96,463 in 25 years. The extra 15 years do 3× the work of the first 10."},
+            {"heading": "Time is the biggest lever", "text": "Two friends save ₹5,000/month. Riya starts at 25 and stops at 35, then never adds. Amit starts at 35 and continues to 60. Riya still ends up richer, because her money had 10 extra years to compound."},
+            {"heading": "The 72 rule", "text": "Divide 72 by the annual return to estimate doubling time. At 12% your money doubles roughly every 6 years. At 8% every 9 years."},
+        ],
+    },
+    {
+        "id": "inflation-basics",
+        "category": "Personal finance",
+        "title": "Making sense of inflation",
+        "read_minutes": 7,
+        "tags": ["inflation", "planning"],
+        "art_variant": "peach",
+        "why_relevant": "Understand why your long-term goals need a little headroom.",
+        "body": [
+            {"heading": "What inflation actually is", "text": "Inflation is the rise in the general price level of goods and services. In India, the CPI (consumer price index) has averaged ~5-6% over the past decade. ₹100 today buys less next year."},
+            {"heading": "Real vs nominal return", "text": "If your FD gives 7% but inflation is 6%, your real return is 1%. That's the number that matters for buying power."},
+            {"heading": "Planning long-term goals", "text": "A ₹10 lakh higher-education goal in 2027 needs about ₹11.6 lakh at 2030 prices if inflation runs 5%. Always inflate distant goals when setting the target."},
+        ],
+    },
+    {
+        "id": "tax-regimes-fy-2025-26",
+        "category": "Taxation",
+        "title": "New vs Old tax regime — FY 2025-26",
+        "read_minutes": 7,
+        "tags": ["tax", "planning"],
+        "art_variant": "mint",
+        "why_relevant": "Choosing correctly can save you tens of thousands in tax each year.",
+        "body": [
+            {"heading": "The two regimes", "text": "For AY 2026-27 (FY 2025-26) salaried Indians can choose the new regime (default) or the old regime. The new regime has broader slabs and a lower headline rate but disallows most deductions. The old regime has narrower slabs but lets you claim 80C, HRA, home-loan interest and more."},
+            {"heading": "New regime slabs (FY 2025-26)", "text": "0% up to ₹4 lakh · 5% ₹4-8 lakh · 10% ₹8-12 lakh · 15% ₹12-16 lakh · 20% ₹16-20 lakh · 25% ₹20-24 lakh · 30% above ₹24 lakh. Standard deduction of ₹75,000 for salaried applies. Rebate under section 87A makes income up to ₹12 lakh effectively tax-free for many salaried employees. Always verify the latest slabs on incometax.gov.in — rules can be revised in the annual budget."},
+            {"heading": "Old regime — quick recap", "text": "0% up to ₹2.5 lakh · 5% up to ₹5 lakh · 20% up to ₹10 lakh · 30% above ₹10 lakh. Combine with 80C (₹1.5 lakh), 80D (₹25-75k), HRA, home-loan interest, NPS 80CCD(1B) ₹50k."},
+            {"heading": "Which one should you pick?", "text": "If your legitimate deductions add up to less than ~₹4 lakh, the new regime is usually better. If you use HRA + home loan + 80C + 80D fully, the old regime often wins. Use the official IT department calculator each year — the crossover point shifts with slab changes."},
+        ],
+    },
+    {
+        "id": "sip-vs-lump-sum",
+        "category": "Investing basics",
+        "title": "SIP vs Lumpsum — which is right for you?",
+        "read_minutes": 5,
+        "tags": ["sip", "investing", "strategy"],
+        "art_variant": "dark",
+        "why_relevant": "The vehicle you choose can meaningfully affect returns.",
+        "body": [
+            {"heading": "SIP in one line", "text": "A fixed amount invested at fixed intervals (usually monthly). Automated, disciplined, and forgiving of bad market timing."},
+            {"heading": "When lumpsum wins", "text": "If you receive a bonus or inheritance and the market is meaningfully undervalued, a lumpsum captures the entire rally. But timing the market is genuinely difficult — most retail investors do better with SIP + STP (systematic transfer plan)."},
+            {"heading": "The hybrid approach", "text": "Park the lumpsum in a liquid fund and set up an STP to move a fixed sum into equity every month. You keep the compounding benefit while spreading the entry."},
+        ],
+    },
+]
+
+DAILY_TIPS = [
+    {"kind": "Today's Financial Fact", "text": "The average Indian saves about 30% of income — but experts recommend at least 20% goes toward long-term investing, not just parking in a savings account."},
+    {"kind": "Today's Tax Tip", "text": "Contributions to NPS (Tier 1) qualify for an additional ₹50,000 deduction under section 80CCD(1B) in the old regime — over and above the ₹1.5 lakh 80C limit."},
+    {"kind": "Today's Investment Concept", "text": "SIP + STP: park a windfall in a liquid fund, then use a Systematic Transfer Plan to drip it into equity every month. You get compounding without market-timing anxiety."},
+    {"kind": "Today's Money Mistake to Avoid", "text": "Buying insurance for tax saving. ULIPs and endowment plans usually give sub-inflation returns. Keep insurance and investment separate: term plan + mutual funds."},
+    {"kind": "Today's Financial Term", "text": "Expense ratio — the annual fee a mutual fund charges as a % of your investment. Direct plans have lower expense ratios than Regular plans because they cut out distributor commissions."},
+    {"kind": "Today's Financial Fact", "text": "Since 1 April 2023 the debt mutual fund gains lost indexation benefit — they're now taxed at your slab rate regardless of holding period."},
+    {"kind": "Today's Tax Tip", "text": "Health insurance premiums for parents give an extra ₹25,000 (or ₹50,000 if senior) deduction under 80D, over and above your own family cover."},
+    {"kind": "Today's Investment Concept", "text": "Rupee-cost averaging: investing a fixed sum monthly automatically buys more units when prices fall and fewer when they rise — it lowers your average cost."},
+    {"kind": "Today's Money Mistake to Avoid", "text": "Chasing last year's best-performing mutual fund. Past returns don't predict future returns, and the top-performer often reverts to average."},
+    {"kind": "Today's Financial Term", "text": "STCG vs LTCG — Short-Term Capital Gains (equity: <12 months, tax 20%) vs Long-Term Capital Gains (equity: >12 months, tax 12.5% above ₹1.25 lakh per year for FY 2025-26)."},
+    {"kind": "Today's Scam Awareness", "text": "RBI never asks for your OTP, PIN or full card number over call or WhatsApp. Any 'refund' or 'blocked account' call demanding these details is a scam."},
+    {"kind": "Today's Financial Concept", "text": "The 50-30-20 rule: 50% of after-tax income to needs, 30% to wants, 20% to savings & debt repayment. A useful starting frame, not a rigid law."},
+    {"kind": "Today's Tax Tip", "text": "The Standard Deduction of ₹75,000 (new regime) or ₹50,000 (old) is automatic for salaried employees — you don't need proof to claim it."},
+    {"kind": "Today's Investment Concept", "text": "Asset allocation matters more than fund selection. Getting 60/40 equity-debt roughly right beats obsessing over which small-cap fund to pick."},
+]
+
+
+def build_learn_router(db: AsyncIOMotorDatabase, get_current_user):
+    router = APIRouter(prefix="/learn", tags=["learn"])
+
+    @router.get("/articles")
+    async def list_articles():
+        return {"articles": [
+            {k: v for k, v in a.items() if k != "body"} | {"summary": a["body"][0]["text"][:180] + "…"}
+            for a in LEARN_ARTICLES
+        ]}
+
+    @router.get("/articles/{article_id}")
+    async def get_article(article_id: str):
+        art = next((a for a in LEARN_ARTICLES if a["id"] == article_id), None)
+        if not art:
+            raise HTTPException(404, "Article not found.")
+        return art
+
+    @router.get("/daily")
+    async def daily():
+        # Deterministic: same day → same tip
+        today = date.today().isoformat()
+        idx = int(hashlib.sha1(today.encode()).hexdigest(), 16) % len(DAILY_TIPS)
+        tip = DAILY_TIPS[idx]
+        return {
+            "date": today,
+            "kind": tip["kind"],
+            "text": tip["text"],
+            "index": idx,
+            "of_total": len(DAILY_TIPS),
+        }
+
+    return router
+
+
+# --------- WHAT-IF SIMULATOR ----------
+
+class WhatIfInput(BaseModel):
+    current_monthly_savings: float = Field(ge=0)
+    monthly_savings_delta: float = 0  # positive = save more
+    monthly_income: Optional[float] = None
+    monthly_expenses: Optional[float] = None
+    goal_target: float = Field(gt=0)
+    goal_current: float = Field(ge=0, default=0)
+    expected_annual_return: float = Field(ge=0, le=40, default=8.0)
+    years_horizon: Optional[int] = None
+
+
+def _months_to_goal(current: float, monthly_save: float, target: float, annual_rate_pct: float) -> Optional[int]:
+    if monthly_save <= 0:
+        return None
+    r = annual_rate_pct / 100.0 / 12.0
+    balance = current
+    for m in range(1, 12 * 60 + 1):  # cap at 60 years
+        balance = balance * (1 + r) + monthly_save
+        if balance >= target:
+            return m
+    return None
+
+
+def _project_balance(current: float, monthly_save: float, months: int, annual_rate_pct: float) -> float:
+    r = annual_rate_pct / 100.0 / 12.0
+    balance = current
+    for _ in range(months):
+        balance = balance * (1 + r) + monthly_save
+    return round(balance, 2)
+
+
+def build_whatif_router(get_current_user):
+    router = APIRouter(prefix="/whatif", tags=["whatif"])
+
+    @router.post("")
+    async def whatif(body: WhatIfInput, user=Depends(get_current_user)):
+        base = body.current_monthly_savings
+        proposed = max(0.0, base + body.monthly_savings_delta)
+        rate = body.expected_annual_return
+        months_base = _months_to_goal(body.goal_current, base, body.goal_target, rate)
+        months_new = _months_to_goal(body.goal_current, proposed, body.goal_target, rate)
+        # Build a projection series for chart (36 months by default)
+        horizon = min(360, (body.years_horizon or 5) * 12)
+        series = []
+        r = rate / 100.0 / 12.0
+        b_base = body.goal_current
+        b_new = body.goal_current
+        for m in range(1, horizon + 1):
+            b_base = b_base * (1 + r) + base
+            b_new = b_new * (1 + r) + proposed
+            if m % 3 == 0 or m == horizon:
+                series.append({"month": m, "current": round(b_base, 0), "proposed": round(b_new, 0)})
+        return {
+            "current_monthly_savings": base,
+            "proposed_monthly_savings": proposed,
+            "months_to_goal_current": months_base,
+            "months_to_goal_proposed": months_new,
+            "goal_target": body.goal_target,
+            "goal_current": body.goal_current,
+            "expected_annual_return": rate,
+            "projection_current": _project_balance(body.goal_current, base, horizon, rate),
+            "projection_proposed": _project_balance(body.goal_current, proposed, horizon, rate),
+            "horizon_months": horizon,
+            "series": series,
+            "disclaimer": "Projections are educational estimates only. Actual returns depend on market conditions and are not guaranteed. Consult a qualified financial advisor for personalised planning.",
+        }
+
+    return router

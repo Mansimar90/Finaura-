@@ -80,9 +80,9 @@ export default function Login() {
   return (
     <div className="auth-page">
       <div className="auth-card" data-testid="login-card">
-        <div className="auth-brand"><span className="brand-mark">f</span> finaura</div>
+        <div className="auth-brand"><span className="brand-mark">f</span> FINAURA AI</div>
         <h1>Welcome back</h1>
-        <p className="subtitle">Sign in to your Finaura account to continue.</p>
+        <p className="subtitle">Sign in to your FINAURA AI account to continue.</p>
 
         {error && <div className="auth-error" data-testid="login-error">{error}</div>}
 
@@ -130,7 +130,7 @@ export default function Login() {
         )}
 
         <div className="auth-footer">
-          New to Finaura?{' '}
+          New to FINAURA AI?{' '}
           <Link data-testid="signup-link" to="/signup">Create your account</Link>
         </div>
 

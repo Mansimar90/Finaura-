@@ -24,8 +24,8 @@ export default function Onboarding() {
   return (
     <div className="onboard-page">
       <div className="onboard-card" data-testid="onboarding-card">
-        <div className="auth-brand"><span className="brand-mark">f</span> finaura</div>
-        <h1>Welcome to Finaura</h1>
+        <div className="auth-brand"><span className="brand-mark">f</span> FINAURA AI</div>
+        <h1>Welcome to FINAURA AI</h1>
         <p>Would you like to start fresh with your own data, or explore first with our sample profile? You can change this later.</p>
 
         {error && <div className="auth-error">{error}</div>}
@@ -44,7 +44,7 @@ export default function Onboarding() {
           <button data-testid="onboarding-demo-choice" type="button" className={`onboard-choice ${choice === 'demo' ? 'selected' : ''}`} onClick={() => setChoice('demo')}>
             <span className="badge">Explore</span>
             <h3>Load sample data</h3>
-            <p>Try Finaura with six months of realistic demo transactions. Clear it any time from Settings.</p>
+            <p>Try FINAURA AI with six months of realistic demo transactions. Clear it any time from Settings.</p>
           </button>
         </div>
 

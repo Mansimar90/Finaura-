@@ -22,7 +22,7 @@ export default function VerifyEmail() {
   return (
     <div className="auth-page">
       <div className="auth-card" data-testid="verify-email-card">
-        <div className="auth-brand"><span className="brand-mark">f</span> finaura</div>
+        <div className="auth-brand"><span className="brand-mark">f</span> FINAURA AI</div>
         <h1>{status === 'success' ? 'Email verified' : status === 'error' ? 'Something went wrong' : 'Verifying your email…'}</h1>
         <p className="subtitle">
           {status === 'success' && 'Your email has been confirmed. You\'re all set.'}
@@ -31,7 +31,7 @@ export default function VerifyEmail() {
         </p>
         {status === 'success' && (
           <button data-testid="verify-continue-button" className="auth-btn" onClick={() => navigate(user ? '/' : '/login')}>
-            Continue to Finaura
+            Continue to FINAURA AI
           </button>
         )}
         {status === 'error' && (

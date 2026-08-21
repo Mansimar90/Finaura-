@@ -98,7 +98,7 @@ export default function StatementUpload({ onImported }) {
             <span className="active">1. Map columns</span> <ChevronRight size={14} /> <span>2. Review</span> <ChevronRight size={14} /> <span>3. Import</span>
           </div>
           <p style={{ fontSize: 13, color: '#556b60' }}>
-            Detected {preview.total_rows} rows in <b>{file?.name}</b>. Match the columns from your file to Finaura's fields.
+            Detected {preview.total_rows} rows in <b>{file?.name}</b>. Match the columns from your file to FINAURA AI's fields.
             Use <i>Signed amount</i> if your statement has one amount column, or <i>Debit / Credit</i> if it splits them.
           </p>
           <div className="mapping-grid">
@@ -137,7 +137,7 @@ export default function StatementUpload({ onImported }) {
             <span>1. Map columns</span> <ChevronRight size={14} /> <span className="active">2. Review</span> <ChevronRight size={14} /> <span>3. Import</span>
           </div>
           <p style={{ fontSize: 13, color: '#556b60' }}>
-            {parsed.length} transaction{parsed.length === 1 ? '' : 's'} found. Correct anything Finaura got wrong before importing.
+            {parsed.length} transaction{parsed.length === 1 ? '' : 's'} found. Correct anything FINAURA AI got wrong before importing.
             {preview?.kind === 'pdf' && <> PDF extraction is best-effort — always double-check.</>}
           </p>
           <div className="table-wrap">

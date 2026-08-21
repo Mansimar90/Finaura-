@@ -33,7 +33,7 @@ export default function ResetPassword() {
   return (
     <div className="auth-page">
       <div className="auth-card" data-testid="reset-card">
-        <div className="auth-brand"><span className="brand-mark">f</span> finaura</div>
+        <div className="auth-brand"><span className="brand-mark">f</span> FINAURA AI</div>
         <h1>Set a new password</h1>
         <p className="subtitle">Choose a strong password you'll remember.</p>
 

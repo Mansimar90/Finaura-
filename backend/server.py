@@ -20,6 +20,8 @@ from pydantic import BaseModel
 from auth import build_auth_router, make_get_current_user, ensure_indexes, public_user
 from passkeys import build_passkey_router, ensure_passkey_indexes
 from statements import build_statements_router
+from memories import build_memory_router, ensure_memory_indexes, retrieve_relevant
+from features import build_learn_router, build_whatif_router
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("finaura")
@@ -102,6 +104,13 @@ class ProfileInput(BaseModel):
     name: Optional[str] = None
     occupation: Optional[str] = None
     age: Optional[int] = None
+    phone: Optional[str] = None
+    dob: Optional[str] = None
+    location: Optional[str] = None
+    financial_experience: Optional[str] = None  # "beginner"|"intermediate"|"advanced"
+    risk_tolerance: Optional[str] = None  # "conservative"|"balanced"|"aggressive"
+    interests: Optional[list[str]] = None  # e.g. ["mutual-funds","tax","sip"]
+    avatar_url: Optional[str] = None
     monthly_income: Optional[int] = None
     monthly_expenses: Optional[int] = None
     current_savings: Optional[int] = None
@@ -222,13 +231,24 @@ def _health_score(profile: dict, goals: list) -> int:
     return max(0, min(100, round(score)))
 
 
+@api_router.get("/user/profile")
+async def get_profile(user=Depends(get_current_user)):
+    profile = user.get("profile") or {}
+    return {
+        "name": user.get("name"),
+        "email": user.get("email"),
+        "email_verified": bool(user.get("email_verified")),
+        **{k: profile.get(k) for k in ["occupation","age","phone","dob","location","financial_experience","risk_tolerance","interests","avatar_url","monthly_income","monthly_expenses","current_savings","investments","debt","emi"]},
+    }
+
+
 @api_router.patch("/user/profile")
 async def update_profile(body: ProfileInput, user=Depends(get_current_user)):
     update = {}
     if body.name is not None:
         update["name"] = body.name.strip()[:80]
     profile = dict(user.get("profile") or {})
-    for field in ["occupation", "age", "monthly_income", "monthly_expenses", "current_savings", "investments", "debt", "emi"]:
+    for field in ["occupation","age","phone","dob","location","financial_experience","risk_tolerance","interests","avatar_url","monthly_income","monthly_expenses","current_savings","investments","debt","emi"]:
         value = getattr(body, field)
         if value is not None:
             profile[field] = value
@@ -306,43 +326,90 @@ async def delete_data(user=Depends(get_current_user)):
 
 # ============ Ask Finaura (chat) ============
 
-async def _system_prompt(user: Optional[dict]) -> str:
+INDIAN_TAX_CONTEXT_2025_26 = (
+    "FINAURA AI Indian financial context (educational, verify latest on official sites):\n"
+    "Current financial year: FY 2025-26 (AY 2026-27).\n"
+    "NEW regime slabs (FY 2025-26): 0% up to ₹4L · 5% ₹4-8L · 10% ₹8-12L · 15% ₹12-16L · "
+    "20% ₹16-20L · 25% ₹20-24L · 30% above ₹24L. Standard deduction ₹75,000 for salaried. "
+    "Section 87A rebate makes income up to ₹12L effectively tax-free for many salaried employees.\n"
+    "OLD regime slabs: 0% up to ₹2.5L · 5% up to ₹5L · 20% up to ₹10L · 30% above ₹10L. "
+    "80C limit ₹1.5L; 80D health cover ₹25k self + ₹25/50k parents; 80CCD(1B) NPS extra ₹50k.\n"
+    "Capital gains (equity, FY 2025-26): STCG (<12m) 20%; LTCG (>12m) 12.5% above ₹1.25L/yr.\n"
+    "Debt fund gains from 1 Apr 2023 are taxed at your slab rate (no indexation).\n"
+    "Regulators — RBI: banking + monetary policy · SEBI: capital markets + mutual funds · "
+    "IRDAI: insurance · PFRDA: NPS · IT Dept: income tax filing.\n"
+    "Always mention that time-sensitive rates should be verified on the official Income Tax "
+    "Department / RBI / SEBI portal and that this is educational content, not personal advice."
+)
+
+
+async def _system_prompt(user: Optional[dict], user_message: str = "") -> str:
+    base_rules = (
+        "You are FINAURA AI, a warm, concise financial education assistant for Indian users. "
+        "Rules: (1) Never invent tax rates, sections, laws, deadlines, government schemes or "
+        "specific numbers. If unsure, say so. (2) Always mention 'educational, not personal advice' "
+        "for tax/investment questions. (3) Prefer INR (₹) formatting. (4) Use short paragraphs, "
+        "bullets or small tables when helpful. (5) Never claim bank access or exact market prices. "
+        "(6) Use previously stored user information when relevant — don't ask for facts already on file. "
+        "(7) If the user's stored data is missing something needed, ask a focused follow-up."
+    )
     if user is None:
         return (
-            "You are Ask Finaura, a warm, concise financial education assistant. "
-            "This user is exploring a public demo profile: Aarav Sharma, monthly income ₹185,000, "
-            "expenses ₹123,000, savings ₹62,000, health score 78, goals Higher Education (high), "
-            "Emergency Fund (high), Car (medium). Explain trends and concepts. Never give personalized "
-            "investment orders or claim bank access. Mention this is demo data when relevant."
+            f"{base_rules}\n\n{INDIAN_TAX_CONTEXT_2025_26}\n\n"
+            "This user is exploring a public demo profile: Aarav Sharma, monthly income ₹1,85,000, "
+            "expenses ₹1,23,000, savings ₹62,000, net worth ₹34,85,000, health score 78. Goals: "
+            "Higher Education (high, ₹10L by 2029), Emergency Fund (high, ₹3L by 2027), Car (medium, "
+            "₹8L by 2030). Mention that this is demo data when it comes up."
         )
     uid = str(user["_id"])
     profile = user.get("profile") or {}
     goals = [_clean(g) for g in await db.finaura_goals.find({"user_id": uid}).to_list(20)]
-    txns = [_clean(t) for t in await db.finaura_transactions.find({"user_id": uid}).to_list(50)]
-    goals_summary = ", ".join([f"{g['name']} (₹{g.get('current_amount',0)}/₹{g.get('target_amount',0)}, {g.get('priority','Medium')})" for g in goals]) or "no goals yet"
-    # Use DEMO_SUMMARY as the answer context when the user has loaded demo data
-    # but hasn't yet entered their own profile numbers — matches what the dashboard shows.
+    txn_count = await db.finaura_transactions.count_documents({"user_id": uid})
+    goals_summary = "; ".join([
+        f"{g['name']} priority={g.get('priority','Medium')} target=₹{g.get('target_amount',0):,} "
+        f"saved=₹{g.get('current_amount',0):,} deadline={g.get('deadline','')}"
+        for g in goals
+    ]) or "no goals stored yet"
+
     if user.get("has_demo_data") and profile == {}:
         s = DEMO_SUMMARY
         financial_context = (
-            f"monthly_income ₹{s['income']}, monthly_expenses ₹{s['expenses']}, "
-            f"current_savings ₹{s['current_savings']}, investments ₹{s['investments']}, "
-            f"debt ₹{s['debt']}, net_worth ₹{s['net_worth']}, health_score {s['health_score']} "
-            f"(these are the demo dataset numbers shown on their dashboard)."
+            f"monthly_income ₹{s['income']:,}, monthly_expenses ₹{s['expenses']:,}, "
+            f"current_savings ₹{s['current_savings']:,}, investments ₹{s['investments']:,}, "
+            f"debt ₹{s['debt']:,}, net_worth ₹{s['net_worth']:,} (these are the demo dataset numbers "
+            f"shown on the user's dashboard)."
         )
     else:
         financial_context = (
-            f"monthly_income ₹{profile.get('monthly_income', 'unknown')}, "
-            f"monthly_expenses ₹{profile.get('monthly_expenses', 'unknown')}, "
-            f"current_savings ₹{profile.get('current_savings', 'unknown')}, "
-            f"debt ₹{profile.get('debt', 'unknown')}."
+            f"monthly_income ₹{profile.get('monthly_income', 'not on file')}, "
+            f"monthly_expenses ₹{profile.get('monthly_expenses', 'not on file')}, "
+            f"current_savings ₹{profile.get('current_savings', 'not on file')}, "
+            f"investments ₹{profile.get('investments', 'not on file')}, "
+            f"debt ₹{profile.get('debt', 'not on file')}, "
+            f"emi ₹{profile.get('emi', 'not on file')}."
         )
+    persona = (
+        f"occupation={profile.get('occupation') or 'not on file'}, "
+        f"age={profile.get('age') or 'not on file'}, "
+        f"risk_tolerance={profile.get('risk_tolerance') or 'not on file'}, "
+        f"experience={profile.get('financial_experience') or 'not on file'}, "
+        f"interests={', '.join(profile.get('interests') or []) or 'not on file'}."
+    )
+    memories = await retrieve_relevant(db, uid, user_message, limit=8)
+    memory_block = ""
+    if memories:
+        lines = "\n".join([
+            f"- [{m['category']}] {m['key']}: {m['value']}"
+            + (f" ({m['numeric_value']} {m['unit'] or ''})" if m.get('numeric_value') is not None else "")
+            + f" · updated {m.get('updated_at','')[:10]}"
+            for m in memories
+        ])
+        memory_block = f"\nStored user memories (long-term, use when relevant):\n{lines}\n"
     return (
-        f"You are Ask Finaura, a warm, concise financial education assistant. "
-        f"You are speaking with {user.get('name') or 'a Finaura user'}. Their profile: {financial_context} "
-        f"Goals: {goals_summary}. They have {len(txns)} recorded transactions. "
-        f"Give educational answers grounded in their data. Never give personalized investment orders "
-        f"or claim bank access. If profile fields are missing, invite them to update in Settings."
+        f"{base_rules}\n\n{INDIAN_TAX_CONTEXT_2025_26}\n\n"
+        f"You are speaking with {user.get('name') or 'a Finaura user'}. Persona: {persona} "
+        f"Current finances: {financial_context} Goals: {goals_summary}. "
+        f"They have {txn_count} recorded transactions.{memory_block}"
     )
 
 
@@ -359,7 +426,7 @@ async def chat(payload: ChatInput, request: Request):
             user_doc = await get_current_user(request)
         except HTTPException:
             user_doc = None
-    system = await _system_prompt(user_doc)
+    system = await _system_prompt(user_doc, payload.message)
     model_cfg = CHAT_MODELS.get(payload.model or "openai", CHAT_MODELS["openai"])
     session_id = f"finaura-{str(user_doc['_id']) if user_doc else 'demo'}-{model_cfg['provider']}"
 
@@ -412,6 +479,9 @@ async def auth_config():
 app.include_router(build_auth_router(db), prefix="/api")
 app.include_router(build_passkey_router(db, get_current_user), prefix="/api")
 app.include_router(build_statements_router(db, get_current_user), prefix="/api")
+app.include_router(build_memory_router(db, get_current_user), prefix="/api")
+app.include_router(build_learn_router(db, get_current_user), prefix="/api")
+app.include_router(build_whatif_router(get_current_user), prefix="/api")
 app.include_router(api_router)
 
 app.add_middleware(
@@ -428,6 +498,7 @@ async def _startup():
     try:
         await ensure_indexes(db)
         await ensure_passkey_indexes(db)
+        await ensure_memory_indexes(db)
     except Exception:
         log.exception("Failed to create indexes")
 

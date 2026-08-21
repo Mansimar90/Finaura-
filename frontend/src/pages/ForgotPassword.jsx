@@ -24,7 +24,7 @@ export default function ForgotPassword() {
   return (
     <div className="auth-page">
       <div className="auth-card" data-testid="forgot-card">
-        <div className="auth-brand"><span className="brand-mark">f</span> finaura</div>
+        <div className="auth-brand"><span className="brand-mark">f</span> FINAURA AI</div>
         <h1>Reset your password</h1>
         <p className="subtitle">Enter your email and we'll send a secure reset link.</p>
 

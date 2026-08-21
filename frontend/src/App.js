@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
-import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { LayoutDashboard, Wallet, FileText, TrendingUp, Target, Activity, BookOpen, Sparkles, ShieldCheck, Bell, ChevronRight, Upload, Plus, ArrowUpRight, ArrowDownRight, Send, Check, LockKeyhole, Trash2, CircleHelp, LogOut, Lock, KeyRound, Fingerprint } from 'lucide-react';
+import { AreaChart, Area, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
+import { LayoutDashboard, Wallet, FileText, TrendingUp, Target, Activity, BookOpen, Sparkles, ShieldCheck, Bell, ChevronRight, Upload, Plus, ArrowUpRight, ArrowDownRight, Send, Check, LockKeyhole, Trash2, CircleHelp, LogOut, Lock, KeyRound, Fingerprint, User, Zap, Edit3, Mic, MicOff, Volume2, Moon, Sun, X, Brain } from 'lucide-react';
 import '@/App.css';
 import './auth.css';
 import { AuthProvider, useAuth } from './lib/auth';
 import { api, API, formatApiError } from './lib/api';
 import { registerPasskey, listPasskeys, removePasskey, passkeysSupported } from './lib/passkey';
+import { useVoice } from './lib/useVoice';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import ForgotPassword from './pages/ForgotPassword';
@@ -16,6 +17,9 @@ import VerifyEmail from './pages/VerifyEmail';
 import Onboarding from './pages/Onboarding';
 import PinLock from './pages/PinLock';
 import StatementUpload from './pages/StatementUpload';
+import Profile from './pages/Profile';
+import WhatIf from './pages/WhatIf';
+import ArticleDetail from './pages/ArticleDetail';
 
 const nav = [
   {label:'Dashboard',path:'/',icon:LayoutDashboard},
@@ -23,9 +27,11 @@ const nav = [
   {label:'Statements',path:'/statements',icon:FileText},
   {label:'Six-Month Analysis',path:'/analysis',icon:TrendingUp},
   {label:'Goals & Priorities',path:'/goals',icon:Target},
+  {label:'What-If Simulator',path:'/whatif',icon:Zap},
   {label:'Financial Changes',path:'/changes',icon:Activity},
-  {label:'Finaura Learn',path:'/learn',icon:BookOpen},
-  {label:'Ask Finaura',path:'/ask',icon:Sparkles},
+  {label:'FINAURA Learn',path:'/learn',icon:BookOpen},
+  {label:'Ask FINAURA AI',path:'/ask',icon:Sparkles},
+  {label:'Profile',path:'/profile',icon:User},
   {label:'Settings & Privacy',path:'/settings',icon:ShieldCheck},
 ];
 const money = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
@@ -38,14 +44,14 @@ function Shell({ children, mode }) {
   const { user, logout, lock } = useAuth();
   const isDemo = mode === 'demo';
   const active = nav.find((n) => (isDemo ? `/demo${n.path === '/' ? '' : n.path}` : n.path) === location.pathname) || nav[0];
-  const displayName = isDemo ? 'Aarav Sharma' : (user?.name || 'Finaura user');
+  const displayName = isDemo ? 'Aarav Sharma' : (user?.name || 'FINAURA AI user');
   const displayInitials = isDemo ? 'AS' : initials(displayName);
   const goToNav = (path) => navigate(isDemo ? `/demo${path === '/' ? '' : path}` : path);
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand" data-testid="sidebar-brand"><span className="brand-mark">f</span><span>finaura</span></div>
+        <div className="brand" data-testid="sidebar-brand"><span className="brand-mark">f</span><span>FINAURA <b>AI</b></span></div>
         <div className="demo-pill" data-testid="workspace-mode-pill">
           <span></span> {isDemo ? 'Demo mode · Read only' : (user?.has_demo_data ? 'Demo data loaded' : 'Your data')}
         </div>
@@ -84,7 +90,7 @@ function Shell({ children, mode }) {
       <main className="main">
         {isDemo && (
           <div className="demo-topbanner" data-testid="demo-topbanner">
-            <div><strong>You're exploring Finaura's demo profile.</strong> Sign up to save your own goals and data.</div>
+            <div><strong>You're exploring the FINAURA AI demo profile.</strong> Sign up to save your own goals and data.</div>
             <div className="actions">
               <button className="ghost" data-testid="demo-signin-button" onClick={() => navigate('/login')}>Sign in</button>
               <button data-testid="demo-signup-button" onClick={() => navigate('/signup')}>Create account</button>
@@ -190,7 +196,7 @@ function Dashboard({ data, isDemo }) {
             <div className="insight-mark">✦</div>
             <div>
               <strong>{data.transactions.length ? 'Your savings are back on track' : 'Add your first transaction'}</strong>
-              <p>{data.transactions.length ? <>After dipping in June, you saved <b>{money(s.savings)}</b> this month.</> : 'Finaura will surface trends here as soon as you add income or expenses.'}</p>
+              <p>{data.transactions.length ? <>After dipping in June, you saved <b>{money(s.savings)}</b> this month.</> : 'FINAURA AI will surface trends here as soon as you add income or expenses.'}</p>
             </div>
           </div>
         </Card>
@@ -215,7 +221,7 @@ function Finances({ data }) {
   return (
     <>
       <div className="page-intro">
-        <div><div className="eyebrow">The full picture</div><h2>My finances</h2><p>Everything you've told Finaura, organized in one place.</p></div>
+        <div><div className="eyebrow">The full picture</div><h2>My finances</h2><p>Everything you've told FINAURA AI, organized in one place.</p></div>
         <span className="data-note"><LockKeyhole size={15} /> Private to your profile</span>
       </div>
       <div className="finance-grid">
@@ -319,14 +325,16 @@ function Analysis({ data }) {
       <Card className="analysis-chart">
         <SectionTitle eyebrow="Income vs expenses" title="The gap is your resilience" />
         <ResponsiveContainer width="100%" height={270}>
-          <BarChart data={data.history} barGap={8}>
+          <LineChart data={data.history} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
             <CartesianGrid stroke="#edf1ef" vertical={false} />
-            <XAxis dataKey="month" axisLine={false} tickLine={false} />
-            <YAxis hide />
-            <Tooltip formatter={(v) => money(v)} />
-            <Bar dataKey="income" fill="#10b981" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="expenses" fill="#e2e8f0" radius={[4, 4, 0, 0]} />
-          </BarChart>
+            <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} />
+            <YAxis tickFormatter={(v) => `₹${Math.round(v/1000)}k`} axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 11 }} />
+            <Tooltip formatter={(v) => money(v)} contentStyle={{ border: '1px solid #e2e8f0', borderRadius: 8 }} />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Line type="monotone" dataKey="income" stroke="#10b981" strokeWidth={2.5} dot={{ r: 3 }} name="Income" />
+            <Line type="monotone" dataKey="expenses" stroke="#f59e0b" strokeWidth={2.5} dot={{ r: 3 }} name="Expenses" />
+            <Line type="monotone" dataKey="savings" stroke="#0f172a" strokeWidth={2.5} dot={{ r: 3 }} strokeDasharray="4 4" name="Savings" />
+          </LineChart>
         </ResponsiveContainer>
       </Card>
       <Card>
@@ -356,33 +364,49 @@ function Goals({ data, isDemo, reload }) {
   const navigate = useNavigate();
   const [goals, setGoals] = useState(data.goals);
   const [show, setShow] = useState(false);
+  const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState({ name: '', target_amount: 500000, current_amount: 0, deadline: '2030', priority: 'Medium', monthly_contribution: 10000, emoji: '✦' });
   const [error, setError] = useState('');
   useEffect(() => setGoals(data.goals), [data.goals]);
   const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  const add = async () => {
+  const openNew = () => { setEditingId(null); setForm({ name: '', target_amount: 500000, current_amount: 0, deadline: '2030', priority: 'Medium', monthly_contribution: 10000, emoji: '✦' }); setShow(true); };
+  const openEdit = (g) => { setEditingId(g.id); setForm({ name: g.name, target_amount: g.target_amount, current_amount: g.current_amount, deadline: g.deadline, priority: g.priority, monthly_contribution: g.monthly_contribution || 0, emoji: g.emoji || '✦' }); setShow(true); };
+  const save = async () => {
     if (!form.name) return;
     if (isDemo) { navigate('/signup'); return; }
     const g = { ...form, target_amount: Number(form.target_amount) || 0, current_amount: Number(form.current_amount) || 0, monthly_contribution: Number(form.monthly_contribution) || 0 };
     try {
-      const r = await api.post('/goals', g);
-      setGoals([...goals, { ...r.data, emoji: form.emoji }]);
+      if (editingId) await api.patch(`/goals/${editingId}`, g); else await api.post('/goals', g);
       setForm({ name: '', target_amount: 500000, current_amount: 0, deadline: '2030', priority: 'Medium', monthly_contribution: 10000, emoji: '✦' });
-      setError(''); setShow(false);
-      reload?.();
-    } catch (e) { setError("We couldn't save that goal just now. Please try again."); }
+      setError(''); setShow(false); setEditingId(null);
+      await reload?.();
+    } catch (e) { setError("We couldn't save that goal. Please try again."); }
+  };
+  const remove = async (g) => {
+    if (isDemo) { navigate('/signup'); return; }
+    if (!window.confirm(`Delete goal "${g.name}"? This cannot be undone.`)) return;
+    try { await api.delete(`/goals/${g.id}`); await reload?.(); } catch {}
   };
   return (
     <>
       <div className="page-intro">
         <div><div className="eyebrow">Prioritize what matters</div><h2>Goals & priorities</h2><p>Give every rupee a purpose, then choose what comes first.</p></div>
-        <button data-testid="create-goal-button" className="primary-btn" onClick={() => setShow(true)}><Plus size={17} /> New goal</button>
+        <button data-testid="create-goal-button" className="primary-btn" onClick={openNew}><Plus size={17} /> New goal</button>
       </div>
       {goals.length === 0 && <p style={{ padding: '30px 0', color: '#8b9995' }}>No goals yet. Create your first goal to see it here.</p>}
       <div className="goals-grid">
         {goals.map((g) => (
           <Card className={`goal-card ${g.priority.toLowerCase()}`} key={g.id} data-testid={`goal-card-${g.id}`}>
-            <div className="goal-card-top"><span className="goal-emoji large">{g.emoji || '✦'}</span><span className={`priority ${g.priority.toLowerCase()}`}>{g.priority} priority</span></div>
+            <div className="goal-card-top">
+              <span className="goal-emoji large">{g.emoji || '✦'}</span>
+              <span className={`priority ${g.priority.toLowerCase()}`}>{g.priority} priority</span>
+              {!isDemo && (
+                <div className="goal-actions">
+                  <button className="icon-btn" data-testid={`edit-goal-${g.id}`} onClick={() => openEdit(g)} title="Edit"><Edit3 size={14}/></button>
+                  <button className="icon-btn" data-testid={`delete-goal-${g.id}`} onClick={() => remove(g)} title="Delete"><Trash2 size={14}/></button>
+                </div>
+              )}
+            </div>
             <h3 data-testid={`goal-card-name-${g.id}`}>{g.name}</h3>
             <div className="goal-big-amount" data-testid={`goal-card-amount-${g.id}`}>{money(g.current_amount)} <small>/ {money(g.target_amount)}</small></div>
             <div className="goal-progress thick"><span style={{ width: `${pct(g.current_amount, g.target_amount)}%` }}></span></div>
@@ -395,7 +419,7 @@ function Goals({ data, isDemo, reload }) {
         <div className="modal-backdrop">
           <div className="modal">
             <button data-testid="close-goal-modal-button" className="modal-close" onClick={() => setShow(false)}>×</button>
-            <div className="eyebrow">New goal</div><h3>What are you working toward?</h3>
+            <div className="eyebrow">{editingId ? 'Edit goal' : 'New goal'}</div><h3>{editingId ? 'Update the details' : 'What are you working toward?'}</h3>
             <div className="auth-field"><label>Goal name</label>
               <input data-testid="goal-name-input" value={form.name} onChange={(e) => upd('name', e.target.value)} placeholder="e.g. New home, sabbatical" /></div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -414,7 +438,7 @@ function Goals({ data, isDemo, reload }) {
             </div>
             <div className="auth-field"><label>Monthly contribution (₹)</label>
               <input data-testid="goal-monthly-input" type="number" min="0" value={form.monthly_contribution} onChange={(e) => upd('monthly_contribution', e.target.value)} /></div>
-            <button data-testid="save-goal-button" className="primary-btn full" onClick={add}>{isDemo ? 'Sign up to save' : 'Save goal'}</button>
+            <button data-testid="save-goal-button" className="primary-btn full" onClick={save}>{isDemo ? 'Sign up to save' : (editingId ? 'Update goal' : 'Save goal')}</button>
             {error && <div className="error-message" data-testid="goal-save-error">{error}</div>}
           </div>
         </div>
@@ -461,36 +485,50 @@ function Changes({ data }) {
   );
 }
 
-function Learn() {
-  const cards = [
-    ['Emergency funds', 'Personal finance', 'Because your current cash reserve is below 3 months of expenses.', '8 min read', 'mint'],
-    ['Mutual funds 101', 'Investing basics', 'You have a long-term goal but no investments recorded yet.', '6 min read', 'dark'],
-    ['The power of compounding', 'Long-term planning', 'A small monthly habit can become meaningful over time.', '5 min read', 'yellow'],
-    ['Making sense of inflation', 'Personal finance', 'Understand why your goals need a little headroom.', '7 min read', 'peach'],
-  ];
+function Learn({ isDemo }) {
+  const navigate = useNavigate();
+  const [articles, setArticles] = useState([]);
+  const [daily, setDaily] = useState(null);
+  useEffect(() => {
+    api.get('/learn/articles').then((r) => setArticles(r.data.articles || [])).catch(() => {});
+    api.get('/learn/daily').then((r) => setDaily(r.data)).catch(() => {});
+  }, []);
+  const openArticle = (id) => navigate(isDemo ? `/demo/learn/${id}` : `/learn/${id}`);
+  const featured = articles[0];
   return (
     <>
       <div className="page-intro">
-        <div><div className="eyebrow">Knowledge, made relevant</div><h2>Finaura Learn</h2><p>Financial education shaped around your goals — never a generic feed.</p></div>
-        <span className="learn-count">4 recommendations for you</span>
+        <div><div className="eyebrow">Knowledge, made relevant</div><h2>FINAURA Learn</h2><p>Financial education shaped around your goals — with an Indian lens.</p></div>
+        <span className="learn-count">{articles.length} recommendations for you</span>
       </div>
-      <div className="learn-feature">
-        <div>
-          <div className="eyebrow">Recommended for you · 01</div>
-          <h2>Build your safety net first</h2>
-          <p>Your emergency fund is the foundation beneath every other goal. Learn how to choose a number that feels right for your life.</p>
-          <button data-testid="learn-feature-button" className="light-btn">Read the guide <ArrowUpRight size={16} /></button>
+      {daily && (
+        <Card className="daily-learn-card" data-testid="daily-learn-card">
+          <div className="daily-badge">{daily.kind}</div>
+          <div>
+            <h3 data-testid="daily-learn-text">{daily.text}</h3>
+            <small>{daily.date} · Tip {daily.index + 1} of {daily.of_total}</small>
+          </div>
+        </Card>
+      )}
+      {featured && (
+        <div className="learn-feature" onClick={() => openArticle(featured.id)} data-testid="learn-feature" style={{cursor:'pointer'}}>
+          <div>
+            <div className="eyebrow">Recommended for you · 01</div>
+            <h2>{featured.title}</h2>
+            <p>{featured.why_relevant}</p>
+            <button data-testid="learn-feature-button" className="light-btn">Read the guide <ArrowUpRight size={16} /></button>
+          </div>
+          <div className="feature-number">01</div>
         </div>
-        <div className="feature-number">01</div>
-      </div>
+      )}
       <div className="learn-grid">
-        {cards.map((c) => (
-          <Card className="learn-card" key={c[0]}>
-            <div className={`learn-art ${c[4]}`}>
-              <span>{c[4] === 'mint' ? '◒' : c[4] === 'dark' ? '◌' : c[4] === 'yellow' ? '↗' : '≈'}</span>
+        {articles.slice(1).map((c) => (
+          <Card className="learn-card" key={c.id} onClick={() => openArticle(c.id)} data-testid={`learn-card-${c.id}`} style={{cursor:'pointer'}}>
+            <div className={`learn-art ${c.art_variant || 'mint'}`}>
+              <span>{c.art_variant === 'mint' ? '◒' : c.art_variant === 'dark' ? '◌' : c.art_variant === 'yellow' ? '↗' : '≈'}</span>
             </div>
-            <div className="eyebrow">{c[1]}</div><h3>{c[0]}</h3><p>{c[2]}</p>
-            <div className="learn-footer"><span>{c[3]}</span><ArrowUpRight size={16} /></div>
+            <div className="eyebrow">{c.category}</div><h3>{c.title}</h3><p>{c.why_relevant}</p>
+            <div className="learn-footer"><span>{c.read_minutes} min read</span><ArrowUpRight size={16} /></div>
           </Card>
         ))}
       </div>
@@ -507,16 +545,27 @@ function Ask({ isDemo, userName }) {
     { id: 'openai', label: 'OpenAI GPT-5.4', provider: 'openai' },
     { id: 'claude', label: 'Claude Sonnet 5', provider: 'anthropic' },
   ]);
+  const voice = useVoice();
+  const [voiceMode, setVoiceMode] = useState(() => localStorage.getItem('finaura_voice_reply') === '1');
+
   useEffect(() => {
     api.get('/chat/models').then((r) => setAvailableModels(r.data.models)).catch(() => {});
+    // Pull any prompt seeded by a Learn article
+    const seed = sessionStorage.getItem('finaura_learn_prompt');
+    if (seed) { sessionStorage.removeItem('finaura_learn_prompt'); setMessage(seed); }
   }, []);
+  useEffect(() => { if (voice.transcript) setMessage(voice.transcript); }, [voice.transcript]);
   const activeModelLabel = availableModels.find((m) => m.id === model)?.label || model;
   const chooseModel = (id) => { setModel(id); localStorage.setItem('finaura_chat_model', id); };
+  const toggleVoiceReply = () => { const next = !voiceMode; setVoiceMode(next); localStorage.setItem('finaura_voice_reply', next ? '1' : '0'); if (!next) voice.stopSpeaking(); };
+
   const ask = async (q = message) => {
     if (!q || loading) return;
+    voice.stop();
     setMessage('');
     setMessages((m) => [...m, { role: 'user', text: q }, { role: 'assistant', text: '', model }]);
     setLoading(true);
+    let fullReply = '';
     try {
       const token = localStorage.getItem('finaura_token');
       const r = await fetch(`${API}/chat`, {
@@ -524,12 +573,14 @@ function Ask({ isDemo, userName }) {
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ message: q, model }),
       });
+      if (!r.ok) throw new Error('Chat unavailable');
       const reader = r.body.getReader();
       const dec = new TextDecoder();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = dec.decode(value);
+        fullReply += chunk;
         setMessages((m) => {
           const copy = [...m];
           copy[copy.length - 1] = { ...copy[copy.length - 1], text: (copy[copy.length - 1].text || '') + chunk };
@@ -537,18 +588,20 @@ function Ask({ isDemo, userName }) {
         });
       }
     } catch {
+      fullReply = "I'm unable to reach the assistant right now. Your data is still safely stored.";
       setMessages((m) => {
         const copy = [...m];
-        copy[copy.length - 1] = { ...copy[copy.length - 1], text: "I'm unable to reach the assistant right now. Your data is still available across Finaura." };
+        copy[copy.length - 1] = { ...copy[copy.length - 1], text: fullReply };
         return copy;
       });
     }
     setLoading(false);
+    if (voiceMode && fullReply) voice.speak(fullReply);
   };
   return (
     <>
       <div className="page-intro">
-        <div><div className="eyebrow">A second opinion, grounded in your data</div><h2>Ask Finaura<span className="mint">.</span></h2><p>Ask questions in plain language. Get clear, educational answers.</p></div>
+        <div><div className="eyebrow">A second opinion, grounded in your data</div><h2>Ask FINAURA <span className="mint">AI</span></h2><p>Ask questions in plain language. Get clear, educational answers.</p></div>
         <span className="ai-badge"><Sparkles size={14} /> Context-aware AI</span>
       </div>
       <div className="ask-layout">
@@ -556,8 +609,8 @@ function Ask({ isDemo, userName }) {
           <div className="chat-head">
             <div className="ai-avatar"><Sparkles size={19} /></div>
             <div>
-              <strong>Finaura intelligence</strong>
-              <small>Knows your {isDemo ? 'demo' : ''} profile · Always educational</small>
+              <strong>FINAURA intelligence</strong>
+              <small>Knows your {isDemo ? 'demo' : ''} profile · Long-term memory · Always educational</small>
             </div>
             <div className="model-picker" data-testid="model-picker">
               {availableModels.map((m) => (
@@ -578,7 +631,7 @@ function Ask({ isDemo, userName }) {
             {messages.length === 0 && (
               <div className="message assistant" data-testid="chat-welcome">
                 <strong>Ask me about your money{userName ? `, ${userName.split(' ')[0]}` : ''}.</strong>
-                <p>I can help you understand your trends, compare months, think through goals, or explain financial concepts. Currently answering with <b>{activeModelLabel}</b>.</p>
+                <p>I can help you understand your trends, plan for goals with Indian tax rules (FY 2025-26), or explain financial concepts. Currently answering with <b>{activeModelLabel}</b>.</p>
               </div>
             )}
             {messages.map((m, i) => (
@@ -587,6 +640,9 @@ function Ask({ isDemo, userName }) {
                   <small className="msg-model-tag" data-testid={`msg-model-${i}`}>{availableModels.find((x) => x.id === m.model)?.label || m.model}</small>
                 )}
                 <p>{m.text || (loading && i === messages.length - 1 ? '…' : '')}</p>
+                {m.role === 'assistant' && m.text && voice.ttsSupported && (
+                  <button className="link-mic" data-testid={`speak-message-${i}`} onClick={() => voice.speaking ? voice.stopSpeaking() : voice.speak(m.text)}><Volume2 size={12}/> {voice.speaking ? 'Stop' : 'Read aloud'}</button>
+                )}
               </div>
             ))}
             {loading && <div className="typing"><i></i><i></i><i></i></div>}
@@ -597,15 +653,25 @@ function Ask({ isDemo, userName }) {
             ))}
           </div>
           <div className="chat-input">
-            <input data-testid="ask-finaura-input" value={message} onChange={(e) => setMessage(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && ask()} placeholder={`Ask ${activeModelLabel} anything…`} />
+            {voice.supported && (
+              <button data-testid="voice-mic-button" className={`icon-btn mic-btn ${voice.listening ? 'listening' : ''}`} onClick={() => voice.listening ? voice.stop() : voice.start()} title={voice.listening ? 'Stop listening' : 'Speak your question'}>
+                {voice.listening ? <MicOff size={17}/> : <Mic size={17}/>}
+              </button>
+            )}
+            <input data-testid="ask-finaura-input" value={message} onChange={(e) => setMessage(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && ask()} placeholder={voice.listening ? 'Listening…' : `Ask ${activeModelLabel} anything…`} />
             <button data-testid="ask-finaura-send-button" onClick={() => ask()}><Send size={17} /></button>
           </div>
-          <small className="disclaimer">Finaura provides education, not investment orders. {isDemo && 'This conversation uses demo data.'}</small>
+          {voice.ttsSupported && (
+            <label className="voice-toggle" data-testid="voice-reply-toggle">
+              <input type="checkbox" checked={voiceMode} onChange={toggleVoiceReply}/> Read replies aloud
+            </label>
+          )}
+          <small className="disclaimer">FINAURA AI provides education, not investment orders. {isDemo && 'This conversation uses demo data.'}</small>
         </Card>
         <div className="ask-side">
           <div className="eyebrow">Try asking</div>
           <h3>Make your money clearer.</h3>
-          {['Which month did my expenses increase the most?', 'What are my highest spending categories?', 'Why is my financial health score 78?'].map((q) => (
+          {['Which month did my expenses increase the most?', 'What are my highest spending categories?', 'Explain the FY 2025-26 new tax regime.'].map((q) => (
             <button data-testid={`ask-prompt-${q.slice(0, 10).replaceAll(' ', '-').toLowerCase()}`} className="prompt" onClick={() => ask(q)} key={q}>{q}<ChevronRight size={15} /></button>
           ))}
         </div>
@@ -641,7 +707,7 @@ function PasskeySection() {
     <div className="account-card" data-testid="passkey-section">
       <h3>Passkeys (Face ID · Touch ID · Windows Hello)</h3>
       <p style={{ fontSize: 12, color: '#556b60', margin: '0 0 12px', lineHeight: 1.55 }}>
-        Passkeys let you unlock Finaura with your face, fingerprint, or a hardware security key — alongside your PIN.
+        Passkeys let you unlock FINAURA AI with your face, fingerprint, or a hardware security key — alongside your PIN.
       </p>
       {!supported && <div className="auth-provider-badge" data-testid="passkey-not-supported">Passkeys aren't available in this browser. Try Safari (iOS/macOS), Chrome, or Edge on a device with biometrics.</div>}
       {error && <div className="auth-error" data-testid="passkey-error">{error}</div>}
@@ -659,6 +725,113 @@ function PasskeySection() {
           <Fingerprint size={13}/> {busy ? 'Registering…' : 'Add a passkey'}
         </button>
       )}
+    </div>
+  );
+}
+
+function AiMemorySection() {
+  const [items, setItems] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [form, setForm] = useState({ category: 'preference', key: '', value: '' });
+  const load = async () => { try { const { data } = await api.get('/memories'); setItems(data.memories || []); } catch {} };
+  useEffect(() => { load(); }, []);
+  const add = async () => {
+    if (!form.key || !form.value) return;
+    setBusy(true); setError('');
+    try { await api.post('/memories', form); setForm({ category: 'preference', key: '', value: '' }); await load(); }
+    catch (e) { setError(e?.response?.data?.detail || 'Could not save.'); }
+    finally { setBusy(false); }
+  };
+  const del = async (id) => { if (!window.confirm('Forget this memory?')) return; try { await api.delete(`/memories/${id}`); await load(); } catch {} };
+  const clearAll = async () => { if (!window.confirm('Clear ALL long-term memories for FINAURA AI?')) return; try { await api.delete('/memories'); await load(); } catch {} };
+  return (
+    <div className="account-card" data-testid="ai-memory-section">
+      <h3><Brain size={16} style={{verticalAlign:'-3px',marginRight:6}}/> AI long-term memory</h3>
+      <p style={{ fontSize: 12, color: '#556b60', margin: '0 0 12px', lineHeight: 1.55 }}>
+        FINAURA AI stores structured facts you share — goals, income, preferences — for at least a year so it doesn't ask twice. You control everything here.
+      </p>
+      {error && <div className="auth-error">{error}</div>}
+      <div className="memory-list" data-testid="memory-list">
+        {items.length === 0 && <p style={{fontSize:12,color:'#8b9995'}}>No stored memories yet. Add one below or let FINAURA AI capture them from chat.</p>}
+        {items.map((m) => (
+          <div className="memory-row" key={m.id} data-testid={`memory-row-${m.id}`}>
+            <div>
+              <span className="memory-cat">{m.category}</span>
+              <strong>{m.key}</strong>
+              <p>{m.value}{m.numeric_value != null ? ` — ${m.numeric_value} ${m.unit || ''}` : ''}</p>
+              <small>Updated {(m.updated_at || '').slice(0,10)}</small>
+            </div>
+            <button className="icon-btn" data-testid={`memory-delete-${m.id}`} onClick={() => del(m.id)}><Trash2 size={13}/></button>
+          </div>
+        ))}
+      </div>
+      <div className="memory-add">
+        <select value={form.category} onChange={(e) => setForm((f) => ({...f, category: e.target.value}))} data-testid="memory-category">
+          {['preference','income','expense','goal','risk','investment','tax','debt','insurance','profile','other'].map((c) => <option key={c}>{c}</option>)}
+        </select>
+        <input placeholder="Fact key (e.g. monthly_income)" value={form.key} onChange={(e) => setForm((f) => ({...f, key: e.target.value}))} data-testid="memory-key"/>
+        <input placeholder="Value" value={form.value} onChange={(e) => setForm((f) => ({...f, value: e.target.value}))} data-testid="memory-value"/>
+        <button className="pill-btn mint" data-testid="memory-add-button" onClick={add} disabled={busy}><Plus size={13}/> Add</button>
+      </div>
+      {items.length > 0 && (
+        <button className="pill-btn" data-testid="memory-clear-all" onClick={clearAll} style={{marginTop:12}}><Trash2 size={13}/> Clear all AI memory</button>
+      )}
+    </div>
+  );
+}
+
+function useTheme() {
+  const [theme, setTheme] = useState(() => localStorage.getItem('finaura_theme') || 'light');
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('finaura_theme', theme);
+  }, [theme]);
+  return [theme, setTheme];
+}
+
+function AppearanceSection() {
+  const [theme, setTheme] = useTheme();
+  return (
+    <div className="account-card" data-testid="appearance-section">
+      <h3>Appearance</h3>
+      <p style={{ fontSize: 12, color: '#556b60', margin: '0 0 12px' }}>Choose how FINAURA AI looks. Applies immediately.</p>
+      <div className="theme-choices">
+        {[
+          { id: 'light', label: 'Light', icon: <Sun size={15}/> },
+          { id: 'dark', label: 'Dark', icon: <Moon size={15}/> },
+          { id: 'system', label: 'System', icon: <ShieldCheck size={15}/> },
+        ].map((t) => (
+          <button key={t.id} data-testid={`theme-${t.id}`} className={`theme-choice ${theme === t.id ? 'active' : ''}`} onClick={() => setTheme(t.id)}>
+            {t.icon} <span>{t.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AccountEditSection() {
+  const { user, refreshMe, formatApiError } = useAuth();
+  const [name, setName] = useState(user?.name || '');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const save = async () => {
+    setBusy(true); setMsg(''); setErr('');
+    try { await api.patch('/user/profile', { name }); await refreshMe(); setMsg('Saved.'); }
+    catch (e) { setErr(formatApiError(e)); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="auth-field" style={{ display:'flex', gap:8, alignItems:'flex-end' }}>
+      <div style={{flex:1}}>
+        <label>Display name</label>
+        <input data-testid="account-name-input" value={name} onChange={(e) => setName(e.target.value)}/>
+      </div>
+      <button className="pill-btn mint" data-testid="account-name-save" onClick={save} disabled={busy}>{busy?'…':'Save'}</button>
+      {msg && <span style={{ color: '#087f56', fontSize: 11 }}>{msg}</span>}
+      {err && <span style={{ color: '#a83932', fontSize: 11 }}>{err}</span>}
     </div>
   );
 }
@@ -701,8 +874,8 @@ function Settings({ isDemo, reload }) {
       {!isDemo && (
         <div className="account-card" data-testid="account-card">
           <h3>Account</h3>
+          <AccountEditSection />
           <div className="rows">
-            <div><span>Name</span><strong>{user?.name}</strong></div>
             <div><span>Email</span><strong>{user?.email} {user?.email_verified ? <span style={{color:'#087f56',fontSize:11,marginLeft:6}}>· verified</span> : <span style={{color:'#a56800',fontSize:11,marginLeft:6}}>· pending verification</span>}</strong></div>
             <div><span>Sign-in methods</span><strong>{(user?.providers || []).join(', ') || 'email'}</strong></div>
             <div>
@@ -723,13 +896,15 @@ function Settings({ isDemo, reload }) {
         </div>
       )}
       {!isDemo && <PasskeySection />}
+      {!isDemo && <AiMemorySection />}
+      <AppearanceSection />
       <div className="settings-grid">
         <Card>
           <SectionTitle eyebrow="Privacy principles" title="Built with care" />
           {[['Encrypted in transit', 'Your data travels over HTTPS/TLS.'],
             ['Encrypted at rest', 'Prototype storage is isolated to your profile.'],
             ['Password hashing (bcrypt)', 'Your password is one-way hashed; even we can\'t read it.'],
-            ['No bank credentials', 'Finaura never asks for or stores bank passwords.'],
+            ['No bank credentials', 'FINAURA AI never asks for or stores bank passwords.'],
             ['Delete anytime', 'You can remove your financial information below.']].map(([a, b]) => (
             <div className="privacy-row" key={a}>
               <div className="privacy-icon"><LockKeyhole size={16} /></div>
@@ -813,15 +988,21 @@ function AppWorkspace({ mode }) {
   const isDemo = mode === 'demo';
   if (!data) return <LoadingScreen />;
   const raw = location.pathname.replace(/^\/demo/, '') || '/';
+  // Article detail routes like /learn/:id
+  if (raw.startsWith('/learn/') && raw.length > 7) {
+    return <Shell mode={mode}><ArticleDetail isDemo={isDemo}/></Shell>;
+  }
   const pages = {
     '/': <Dashboard data={data} isDemo={isDemo} />,
     '/finances': <Finances data={data} />,
     '/statements': <Statements data={data} isDemo={isDemo} reload={reload} />,
     '/analysis': <Analysis data={data} />,
     '/goals': <Goals data={data} isDemo={isDemo} reload={reload} />,
+    '/whatif': <WhatIf data={data} isDemo={isDemo} />,
     '/changes': <Changes data={data} />,
-    '/learn': <Learn />,
+    '/learn': <Learn isDemo={isDemo} />,
     '/ask': <Ask isDemo={isDemo} userName={data.user?.name} />,
+    '/profile': <Profile isDemo={isDemo} />,
     '/settings': <Settings isDemo={isDemo} reload={reload} />,
   };
   return <Shell mode={mode}>{pages[raw] || pages['/']}</Shell>;
@@ -869,6 +1050,12 @@ function AppRoutes() {
 
 function AppInner() {
   const clientId = process.env.REACT_APP_GOOGLE_CLIENT_ID || '';
+  // Apply saved theme on first mount so all pages see it.
+  useEffect(() => {
+    const saved = localStorage.getItem('finaura_theme') || 'light';
+    document.documentElement.dataset.theme = saved;
+    document.title = 'FINAURA AI — Your Money. Your Goals. Your Future.';
+  }, []);
   const content = <AppRoutes />;
   return clientId ? (
     <GoogleOAuthProvider clientId={clientId}>{content}</GoogleOAuthProvider>

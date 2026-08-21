@@ -62,7 +62,7 @@ export default function Signup() {
   return (
     <div className="auth-page">
       <div className="auth-card" data-testid="signup-card">
-        <div className="auth-brand"><span className="brand-mark">f</span> finaura</div>
+        <div className="auth-brand"><span className="brand-mark">f</span> FINAURA AI</div>
         <h1>Create your account</h1>
         <p className="subtitle">Your financial data stays private, encrypted, and always yours.</p>
 

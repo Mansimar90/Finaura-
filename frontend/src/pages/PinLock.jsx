@@ -106,7 +106,7 @@ export default function PinLock({ mode = 'verify' }) {
     : 'Enter your PIN';
   const hint = mode === 'set'
     ? (phase === 'enter' ? 'Add an extra lock on top of your password.' : 'Type the same PIN once more.')
-    : `Welcome back${user?.name ? `, ${user.name.split(' ')[0]}` : ''}. Unlock Finaura to continue.`;
+    : `Welcome back${user?.name ? `, ${user.name.split(' ')[0]}` : ''}. Unlock FINAURA AI to continue.`;
 
   return (
     <div className="pin-page" data-testid="pin-lock-screen">
