@@ -296,3 +296,29 @@
 /* Darken mint buttons for better contrast in dark mode */
 :root[data-theme="dark"] .primary-btn,:root[data-theme="dark"] .pill-btn.mint,:root[data-theme="dark"] .theme-choice.active,:root[data-theme="dark"] .model-pill.active{background:#059669}
 :root[data-theme="dark"] .primary-btn:hover,:root[data-theme="dark"] .pill-btn.mint:hover{background:#047857}
+
+/* Dark theme — final contrast pass */
+:root[data-theme="dark"] .whatif-stats>div{background:#111827;border-color:#334155;color:#e2e8f0}
+:root[data-theme="dark"] .whatif-stats>div.highlight{background:#064e3b;border-color:#065f46}
+:root[data-theme="dark"] .whatif-stats>div strong{color:#f8fafc}
+:root[data-theme="dark"] .whatif-stats>div small,:root[data-theme="dark"] .whatif-stats>div span{color:#94a3b8}
+:root[data-theme="dark"] .suggestions button{background:#111827;color:#e2e8f0;border-color:#334155}
+:root[data-theme="dark"] .suggestions button:hover{background:#1e293b}
+/* Darker mint for AA (~5.1:1) */
+:root[data-theme="dark"] .primary-btn,:root[data-theme="dark"] .pill-btn.mint,:root[data-theme="dark"] .theme-choice.active,:root[data-theme="dark"] .model-pill.active{background:#047857}
+:root[data-theme="dark"] .primary-btn:hover,:root[data-theme="dark"] .pill-btn.mint:hover{background:#065f46}
+
+/* Dark theme — cosmetic polish (progress tracks, icon tiles, whatif small labels) */
+:root[data-theme="dark"] .bar,:root[data-theme="dark"] .goal-progress{background:#1e293b}
+:root[data-theme="dark"] .upload-icon{background:#064e3b;color:#a7f3d0}
+:root[data-theme="dark"] .whatif-stats>div.highlight small,:root[data-theme="dark"] .whatif-stats>div.highlight span{color:#a7f3d0}
+:root[data-theme="dark"] .avatar{background:#064e3b;color:#a7f3d0}
+:root[data-theme="dark"] .demo-pill{background:#064e3b;color:#a7f3d0}
+:root[data-theme="dark"] .ai-avatar{background:#064e3b;color:#a7f3d0}
+:root[data-theme="dark"] .priority.high{background:#450a0a;color:#fecaca}
+:root[data-theme="dark"] .priority.medium{background:#3f1d0a;color:#fed7aa}
+:root[data-theme="dark"] .priority.low{background:#1e293b;color:#cbd5e1}
+:root[data-theme="dark"] .income-tag{background:#064e3b;color:#a7f3d0}
+:root[data-theme="dark"] .expense-tag{background:#1e293b;color:#cbd5e1}
+:root[data-theme="dark"] .rate-chip{background:#064e3b;color:#a7f3d0}
+:root[data-theme="dark"] .memory-cat{background:#064e3b;color:#a7f3d0}
