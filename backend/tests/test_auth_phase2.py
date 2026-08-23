@@ -53,13 +53,16 @@ def register(s, created_tokens, email=None, name="TEST User"):
 
 # ---------- config ----------
 class TestConfig:
-    def test_auth_config_not_configured(self, s):
+    def test_auth_config_flags(self, s):
+        # Google is now configured in this environment (auth-code flow); Apple/Resend are not.
         r = s.get(f"{BASE}/auth/config", timeout=30)
         assert r.status_code == 200
         d = r.json()
-        assert d["google_enabled"] is False
+        assert d["google_enabled"] is True
+        assert d["google_authcode_enabled"] is True
         assert d["apple_enabled"] is False
         assert d["resend_enabled"] is False
+        assert "client_secret" not in r.text.lower()
 
 
 # ---------- register / login / me ----------
@@ -138,10 +141,11 @@ class TestRegisterLogin:
 
 # ---------- OAuth not configured ----------
 class TestOAuthNotConfigured:
-    def test_google_503(self, s):
+    def test_google_rejects_fake_credential(self, s):
+        # Google IS configured now, so a fake ID token must be rejected with 401 (not 503)
         r = s.post(f"{BASE}/auth/google", json={"credential": "fake"}, timeout=30)
-        assert r.status_code == 503, r.text[:200]
-        assert "not configured" in r.json()["detail"].lower()
+        assert r.status_code == 401, r.text[:200]
+        assert "invalid google credential" in r.json()["detail"].lower()
 
     def test_apple_503(self, s):
         r = s.post(f"{BASE}/auth/apple", json={"id_token": "fake"}, timeout=30)

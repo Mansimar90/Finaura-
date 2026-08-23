@@ -464,9 +464,14 @@ async def chat_models():
 
 @api_router.get("/auth/config")
 async def auth_config():
+    google_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+    google_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+    google_redirect = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
     return {
-        "google_enabled": bool(os.environ.get("GOOGLE_CLIENT_ID", "").strip()),
-        "google_client_id": os.environ.get("GOOGLE_CLIENT_ID", "").strip(),
+        "google_enabled": bool(google_id),
+        "google_client_id": google_id,
+        # Server-side auth-code flow available only when secret + redirect are configured
+        "google_authcode_enabled": bool(google_id and google_secret and google_redirect),
         "apple_enabled": bool(os.environ.get("APPLE_CLIENT_ID", "").strip()),
         "apple_client_id": os.environ.get("APPLE_CLIENT_ID", "").strip(),
         "apple_redirect_uri": os.environ.get("APPLE_REDIRECT_URI", "").strip(),

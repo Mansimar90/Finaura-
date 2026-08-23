@@ -20,6 +20,7 @@ import StatementUpload from './pages/StatementUpload';
 import Profile from './pages/Profile';
 import WhatIf from './pages/WhatIf';
 import ArticleDetail from './pages/ArticleDetail';
+import GoogleCallback from './pages/GoogleCallback';
 
 const nav = [
   {label:'Dashboard',path:'/',icon:LayoutDashboard},
@@ -1043,6 +1044,7 @@ function AppRoutes() {
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/verify-email" element={<VerifyEmail />} />
+      <Route path="/auth/google/success" element={<GoogleCallback />} />
       <Route path="/onboarding" element={user ? <Onboarding /> : <Navigate to="/login" replace />} />
       <Route path="/lock" element={user ? <PinLock mode="verify" /> : <Navigate to="/login" replace />} />
       <Route path="/set-pin" element={user ? <PinLock mode="set" /> : <Navigate to="/login" replace />} />

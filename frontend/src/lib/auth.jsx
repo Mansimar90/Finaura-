@@ -49,6 +49,17 @@ export function AuthProvider({ children }) {
     return applySession(data);
   };
 
+  // Used by the Google OAuth authorization-code callback page. The backend has already
+  // verified the code + issued our JWT; we just adopt the session and hydrate the user.
+  const applyExternalSession = async (accessToken) => {
+    localStorage.setItem('finaura_token', accessToken);
+    const { data: me } = await api.get('/auth/me');
+    setUser(me);
+    sessionStorage.setItem(UNLOCK_KEY, me?.has_pin ? '0' : '1');
+    setUnlocked(!me?.has_pin);
+    return me;
+  };
+
   const appleLogin = async (payload) => {
     const { data } = await api.post('/auth/apple', payload);
     return applySession(data);
@@ -100,7 +111,7 @@ export function AuthProvider({ children }) {
   return (
     <AuthContext.Provider value={{
       user, config, unlocked,
-      login, register, googleLogin, appleLogin, logout,
+      login, register, googleLogin, appleLogin, applyExternalSession, logout,
       forgotPassword, resetPassword, verifyEmailToken, resendVerification,
       setPin, verifyPin, removePin, lock,
       completeOnboarding, refreshMe, formatApiError,

@@ -6,7 +6,7 @@ Your app is deployed at: **`https://wealth-insights-43.preview.emergentagent.com
 
 ---
 
-## 1. Google OAuth Client ID
+## 1. Google OAuth (Authorization Code flow — server-side token exchange)
 
 **Time to complete: ~5 minutes.** No billing account required.
 
@@ -23,18 +23,27 @@ Your app is deployed at: **`https://wealth-insights-43.preview.emergentagent.com
    - **Authorised JavaScript origins** (add both):
      - `https://wealth-insights-43.preview.emergentagent.com`
      - `http://localhost:3000` (only if you'll test locally)
-   - **Authorised redirect URIs**: leave empty (we use Google's popup one-tap, not redirect).
+   - **Authorised redirect URIs** — add exactly this URL:
+     - `https://wealth-insights-43.preview.emergentagent.com/api/auth/google/callback`
    - Click **Create**.
-5. Copy the **Client ID** (looks like `1234-abcxyz.apps.googleusercontent.com`).
-6. Paste it into **both** files:
-   - `/app/backend/.env` → `GOOGLE_CLIENT_ID="1234-abcxyz.apps.googleusercontent.com"`
-   - `/app/frontend/.env` → `REACT_APP_GOOGLE_CLIENT_ID=1234-abcxyz.apps.googleusercontent.com`
+5. Copy the **Client ID** AND **Client Secret** (both are shown once).
+6. Paste them into `/app/backend/.env`:
+   ```
+   GOOGLE_CLIENT_ID="1234-abcxyz.apps.googleusercontent.com"
+   GOOGLE_CLIENT_SECRET="GOCSPX-xxxxxxxxxxxxxxxx"
+   GOOGLE_REDIRECT_URI="https://wealth-insights-43.preview.emergentagent.com/api/auth/google/callback"
+   ```
+   And also add the **Client ID only** (public) to `/app/frontend/.env`:
+   ```
+   REACT_APP_GOOGLE_CLIENT_ID=1234-abcxyz.apps.googleusercontent.com
+   ```
 7. Restart services: `sudo supervisorctl restart backend frontend`.
-8. Refresh the login page — the Google button will now appear.
+8. Refresh the login page — the "Continue with Google" button will now appear.
 
 Notes:
-- If you change the preview URL (redeploy or rebrand), you must add the new origin in step 4.
-- Google's client ID is **safe to expose** in the frontend; it's public by design.
+- The **Client Secret** is stored server-side only (`backend/.env`). It never touches the browser.
+- If you change the preview URL (redeploy or rebrand), you must add the new origin **and** the new redirect URI in step 4.
+- If you attach a custom domain, add `https://your-domain.com` to Authorized JS Origins and `https://your-domain.com/api/auth/google/callback` to Authorized Redirect URIs.
 
 ---
 

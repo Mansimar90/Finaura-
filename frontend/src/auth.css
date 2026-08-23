@@ -26,6 +26,11 @@
 .social-btn.apple:hover:not(:disabled){background:#25344d}
 .social-btn:disabled{opacity:.5;cursor:not-allowed}
 .social-btn svg,.social-btn img{width:16px;height:16px}
+.social-btn.google{background:#fff;color:#3c4043;border-color:#dadce0}
+.social-btn.google:hover:not(:disabled){background:#f8fafc;border-color:#1a73e8}
+.social-btn.google svg{width:18px;height:18px}
+.loader-spinner{width:28px;height:28px;border:3px solid #e2e8f0;border-top-color:#087f56;border-radius:50%;animation:finaura-spin .8s linear infinite}
+@keyframes finaura-spin{to{transform:rotate(360deg)}}
 .auth-footer{text-align:center;margin-top:22px;font-size:12px;color:var(--muted)}
 .auth-footer a{color:#087f56;font-weight:600;text-decoration:none}
 .auth-footer a:hover{text-decoration:underline}

@@ -9,8 +9,11 @@ from typing import Optional
 import bcrypt
 import jwt
 import uuid
+import httpx
+from urllib.parse import urlencode
 from bson import ObjectId
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, HTTPException, Request, Response, Depends
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -78,6 +81,7 @@ def public_user(doc: dict) -> dict:
         "has_pin": bool(doc.get("pin_hash")),
         "has_passkey": bool(doc.get("has_passkey", False)),
         "providers": doc.get("providers", []),
+        "picture": doc.get("picture"),
         "onboarding_done": bool(doc.get("onboarding_done", False)),
         "has_demo_data": bool(doc.get("has_demo_data", False)),
         "created_at": doc.get("created_at").isoformat() if doc.get("created_at") else None,
@@ -285,6 +289,177 @@ def build_auth_router(db: AsyncIOMotorDatabase) -> APIRouter:
         name = claims.get("name") or (email.split("@")[0].title() if email else "Finaura user")
         return await _upsert_and_sign(provider="google", provider_sub=sub, email=email, name=name, email_verified=bool(claims.get("email_verified")))
 
+    # ---- Google OAuth 2.0 Authorization Code Flow (server-side secret exchange) ----
+    # REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+    @router.get("/google/start")
+    async def google_start(request: Request, next: Optional[str] = "/"):
+        client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+        redirect_uri = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
+        if not client_id or not client_secret or not redirect_uri:
+            raise HTTPException(status_code=503, detail="Google Sign-In is not configured.")
+        state = secrets.token_urlsafe(32)
+        # Normalize `next` at the entry to prevent open-redirect via stored state.
+        clean_next = (next or "/")
+        if not isinstance(clean_next, str) or not clean_next.startswith("/") or clean_next.startswith("//") or clean_next.startswith("/\\"):
+            clean_next = "/"
+        clean_next = clean_next[:200]
+        # Persist state server-side for CSRF check and to remember "next"
+        await db.oauth_states.insert_one({
+            "state": state,
+            "provider": "google",
+            "next": clean_next,
+            "created_at": datetime.now(timezone.utc),
+            "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+        })
+        params = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": "openid email profile",
+            "state": state,
+            "access_type": "online",
+            "prompt": "select_account",
+            "include_granted_scopes": "true",
+        }
+        url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+        resp = RedirectResponse(url=url, status_code=302)
+        # Also send state as SameSite=Lax cookie for defense-in-depth
+        resp.set_cookie(
+            key="fin_g_state", value=state, max_age=600, secure=True,
+            httponly=True, samesite="lax", path="/api/auth",
+        )
+        return resp
+
+    def _safe_next(path: Optional[str]) -> str:
+        """Return path only if it's a safe same-origin relative path.
+        Rejects protocol-relative ('//host'), absolute URLs, backslash-prefixed, or non-'/' starts."""
+        if not path or not isinstance(path, str):
+            return "/"
+        # Must start with a single '/', and not '//' or '/\' (protocol-relative / backslash tricks)
+        if not path.startswith("/") or path.startswith("//") or path.startswith("/\\"):
+            return "/"
+        # No control chars, no CR/LF
+        if any(ord(c) < 0x20 for c in path):
+            return "/"
+        return path[:200]
+
+    def _frontend_redirect(next_path: str, params: dict) -> RedirectResponse:
+        frontend = os.environ.get("FRONTEND_URL", "").rstrip("/")
+        # Land on a dedicated frontend callback page that reads the token from the URL fragment
+        # We use fragment (#) to avoid the token appearing in server access logs / referers.
+        safe_next = _safe_next(next_path)
+        target = f"{frontend}/auth/google/success?next={safe_next}#{urlencode(params)}"
+        return RedirectResponse(url=target, status_code=302)
+
+    @router.get("/google/callback")
+    async def google_callback(request: Request, code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+        client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+        redirect_uri = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
+        if not client_id or not client_secret or not redirect_uri:
+            return _frontend_redirect("/", {"error": "google_not_configured"})
+
+        # User cancelled or Google returned an error
+        if error:
+            log.info("Google OAuth returned error: %s", error)
+            return _frontend_redirect("/", {"error": "google_cancelled" if error == "access_denied" else "google_error"})
+
+        if not code or not state:
+            return _frontend_redirect("/", {"error": "missing_code_or_state"})
+
+        # Validate state (CSRF)
+        state_doc = await db.oauth_states.find_one_and_delete({"state": state, "provider": "google"})
+        if not state_doc:
+            return _frontend_redirect("/", {"error": "invalid_state"})
+        expires = _as_aware(state_doc.get("expires_at"))
+        if expires and expires < datetime.now(timezone.utc):
+            return _frontend_redirect("/", {"error": "expired_state"})
+        cookie_state = request.cookies.get("fin_g_state")
+        if cookie_state and cookie_state != state:
+            return _frontend_redirect("/", {"error": "state_mismatch"})
+        next_path = state_doc.get("next") or "/"
+
+        # Exchange code for tokens (server-side; client_secret NEVER leaves the backend)
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                token_resp = await client.post(
+                    "https://oauth2.googleapis.com/token",
+                    data={
+                        "code": code,
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "redirect_uri": redirect_uri,
+                        "grant_type": "authorization_code",
+                    },
+                    headers={"Accept": "application/json"},
+                )
+            if token_resp.status_code != 200:
+                # Do not leak Google's raw response in the redirect
+                log.warning("Google token exchange failed: %s", token_resp.status_code)
+                return _frontend_redirect(next_path, {"error": "token_exchange_failed"})
+            token_payload = token_resp.json()
+        except Exception:
+            log.exception("Google token exchange network error")
+            return _frontend_redirect(next_path, {"error": "network_error"})
+
+        id_tok = token_payload.get("id_token")
+        access_tok = token_payload.get("access_token")
+        if not id_tok:
+            return _frontend_redirect(next_path, {"error": "no_id_token"})
+
+        # Verify the ID token against Google's public keys
+        try:
+            from google.oauth2 import id_token as g_id_token
+            from google.auth.transport import requests as g_requests
+            claims = g_id_token.verify_oauth2_token(id_tok, g_requests.Request(), client_id)
+        except Exception:
+            log.warning("Google id_token verification failed")
+            return _frontend_redirect(next_path, {"error": "invalid_id_token"})
+
+        if claims.get("iss") not in {"accounts.google.com", "https://accounts.google.com"}:
+            return _frontend_redirect(next_path, {"error": "invalid_issuer"})
+        sub = claims.get("sub")
+        if not sub:
+            return _frontend_redirect(next_path, {"error": "missing_sub"})
+
+        email = (claims.get("email") or "").lower()
+        email_verified = bool(claims.get("email_verified"))
+        name = claims.get("name") or (email.split("@")[0].title() if email else "Finaura user")
+        picture = claims.get("picture") or None
+
+        # Optionally enrich via userinfo endpoint (only if we didn't get picture in claims)
+        if not picture and access_tok:
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    ui = await client.get(
+                        "https://openidconnect.googleapis.com/v1/userinfo",
+                        headers={"Authorization": f"Bearer {access_tok}"},
+                    )
+                    if ui.status_code == 200:
+                        picture = ui.json().get("picture") or picture
+            except Exception:
+                pass
+
+        try:
+            session = await _upsert_and_sign(
+                provider="google", provider_sub=sub, email=email,
+                name=name, email_verified=email_verified, picture=picture,
+            )
+        except HTTPException as exc:
+            log.warning("Google upsert failed: %s", exc.detail)
+            return _frontend_redirect(next_path, {"error": "signin_failed"})
+
+        # Success — send token to the frontend via URL fragment (never logged, never in Referer body)
+        resp = _frontend_redirect(next_path, {
+            "access_token": session["access_token"],
+            "provider": "google",
+        })
+        # Clear the state cookie
+        resp.delete_cookie("fin_g_state", path="/api/auth")
+        return resp
+
+
     # ---- Apple ----
     @router.post("/apple")
     async def apple_login(body: AppleLoginInput):
@@ -322,11 +497,13 @@ def build_auth_router(db: AsyncIOMotorDatabase) -> APIRouter:
             name = email.split("@")[0].title() if email else "Finaura user"
         return await _upsert_and_sign(provider="apple", provider_sub=sub, email=email, name=name, email_verified=bool(claims.get("email_verified")))
 
-    async def _upsert_and_sign(provider: str, provider_sub: str, email: str, name: str, email_verified: bool) -> dict:
+    async def _upsert_and_sign(provider: str, provider_sub: str, email: str, name: str, email_verified: bool, picture: Optional[str] = None) -> dict:
         provider_field = f"{provider}_sub"
-        # Try find by provider sub first
+        # 1) Prefer exact provider_sub match (this Google account already linked to a Finaura user)
         user = await db.users.find_one({provider_field: provider_sub})
-        if not user and email:
+        # 2) Fallback: link to an existing account by email — but ONLY when Google marks the email verified.
+        #    This prevents an attacker with an unverified-email IdP token from taking over a password account.
+        if not user and email and email_verified:
             user = await db.users.find_one({"email": email})
         now = datetime.now(timezone.utc)
         if user:
@@ -337,6 +514,8 @@ def build_auth_router(db: AsyncIOMotorDatabase) -> APIRouter:
                 update["$set"]["email"] = email
             if email_verified and not user.get("email_verified"):
                 update["$set"]["email_verified"] = True
+            if picture and not user.get("picture"):
+                update["$set"]["picture"] = picture
             await db.users.update_one({"_id": user["_id"]}, update)
             user = await db.users.find_one({"_id": user["_id"]})
         else:
@@ -347,6 +526,7 @@ def build_auth_router(db: AsyncIOMotorDatabase) -> APIRouter:
                 "providers": [provider],
                 provider_field: provider_sub,
                 "email_verified": email_verified,
+                "picture": picture,
                 "pin_hash": None,
                 "onboarding_done": False,
                 "has_demo_data": False,
@@ -500,5 +680,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.users.create_index("apple_sub", sparse=True)
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await db.email_verification_tokens.create_index("expires_at", expireAfterSeconds=0)
+    await db.oauth_states.create_index("expires_at", expireAfterSeconds=0)
+    await db.oauth_states.create_index("state", unique=True)
     await db.finaura_goals.create_index("user_id")
     await db.finaura_transactions.create_index("user_id")

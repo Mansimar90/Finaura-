@@ -1,0 +1,66 @@
+{
+  "summary": "Backend-only testing of the new Google OAuth 2.0 Authorization-Code flow (/api/auth/google/start, /api/auth/google/callback), /api/auth/config exposure, CSRF state handling, client-secret leak audit, DB indexes, plus regression on existing auth + financial endpoints. New suite: 25/25 passing. Existing suites test_auth_phase2.py + test_finaura_regression.py: 33 passed / 5 skipped after updating 2 stale assertions that still expected Google to be unconfigured. No client secret leak found in any response body/header/cookie or in supervisor logs (grep 'GOCSPX' => 0 hits). One security hardening issue found: `next` query param allows protocol-relative values (//evil.com) which survive to the frontend redirect => potential open redirect.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/auth/google/start?next=//evil.com", "issue": "OPEN REDIRECT RISK: _frontend_redirect only checks next.startswith('/'), so '//evil.com' passes and is echoed back as ?next=//evil.com to /auth/google/success. GoogleCallback.jsx then calls navigate(next) after a successful sign-in; browsers resolve '//evil.com' as a protocol-relative absolute URL, navigating the freshly-authenticated user off-site. Fix: reject next values starting with '//' or containing ':' / '\\\\' (e.g. `if not next.startswith('/') or next.startswith('//')`), and/or allow-list known app paths."},
+      {"endpoint": "GET /api/auth/google/callback", "issue": "Cookie state check is only enforced when the cookie is present (`if cookie_state and cookie_state != state`). An attacker who strips/never sends fin_g_state bypasses the defense-in-depth layer. Server-side single-use state still protects the flow, so severity is low, but consider requiring the cookie when it was set."},
+      {"endpoint": "_upsert_and_sign (auth.py:482)", "issue": "Existing-account linking falls back to `db.users.find_one({'email': email})` without requiring claims.email_verified. If Google ever returns an unverified email (possible for some Workspace/3rd-party-IdP setups) this would allow taking over an existing password account. Recommend linking by email only when email_verified is true."},
+      {"endpoint": "_upsert_and_sign", "issue": "picture/name are only written when the field is absent (`if picture and not user.get('picture')`), so a changed Google avatar never refreshes on subsequent sign-ins. Minor UX/data-freshness issue."},
+      {"endpoint": "db.oauth_states", "issue": "Unconsumed states accumulate until the TTL monitor sweeps (24 rows present during testing). Expected with expireAfterSeconds=0 (Mongo sweeps once per minute after expires_at) — informational only."},
+      {"endpoint": "/var/log/supervisor/backend.err.log", "issue": "Pre-existing (not from this change) tracebacks: 'ValueError: Out of range float values are not JSON compliant'. Not reproducible in this run (/api/financial/overview returned 200), but indicates an inf/NaN can still be produced by a computed financial metric for some data shapes."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_google_oauth_authcode.py",
+    "/app/backend/tests/check_oauth_state_doc.py",
+    "/app/test_reports/pytest/iteration11_oauth.xml",
+    "/app/test_reports/pytest/iteration11_regression.xml"
+  ],
+  "verified_pass": [
+    "GET /api/auth/config -> google_enabled=true, google_authcode_enabled=true, google_client_id matches .env and ends with .apps.googleusercontent.com; no 'secret' key and no GOCSPX substring anywhere in body/headers",
+    "GET /api/auth/google/start -> 302 to https://accounts.google.com/o/oauth2/v2/auth with client_id, redirect_uri == GOOGLE_REDIRECT_URI (ends /api/auth/google/callback), response_type=code, scope exactly {openid,email,profile}, random 43-char state; 3 consecutive calls produce 3 distinct states",
+    "Set-Cookie fin_g_state == state with HttpOnly; Secure; SameSite=Lax; Path=/api/auth; Max-Age=600",
+    "oauth_states doc persisted with provider=google, next preserved, expires_at exactly 10.00 minutes out; indexes = state_1 (unique) + expires_at_1 (expireAfterSeconds=0)",
+    "callback?error=access_denied -> 302 to FRONTEND/auth/google/success#error=google_cancelled",
+    "callback?error=server_error -> #error=google_error",
+    "callback (no params) and callback?code=abc -> #error=missing_code_or_state",
+    "callback with unknown state -> #error=invalid_state (no crash)",
+    "callback with valid state + bogus code -> #error=token_exchange_failed; no access_token in fragment; no client secret and no raw Google detail (e.g. 'invalid_grant') in the Location header; backend logs only 'Google token exchange failed: 400'",
+    "State single-use: second callback with the same state -> #error=invalid_state",
+    "Cookie/state mismatch (fin_g_state != state param) -> #error=state_mismatch",
+    "next param round-trips through the DB: start?next=/goals -> callback Location contains ?next=/goals",
+    "No 5xx from callback for any malformed param combination tested",
+    "grep -c GOCSPX on backend.err.log and backend.out.log = 0",
+    "Regression: POST /api/auth/register (new email) -> 200 with bearer access_token + user (includes picture, no _id); DELETE /api/auth/account cleanup 200",
+    "Regression: POST /api/auth/login testuser@finaura.dev -> 200",
+    "Regression: POST /api/auth/google (legacy ID-token) with fake credential -> 401 'Invalid Google credential.'",
+    "Regression: GET /api/auth/me -> 200 with 'picture' field present; unauthenticated -> 401",
+    "Regression: GET /api/financial/overview -> 200 with goals list; POST/PATCH/DELETE /api/goals CRUD verified with read-back persistence"
+  ],
+  "action_items": [
+    "Harden the `next` parameter against protocol-relative open redirect ('//host') in _frontend_redirect (and optionally validate at /google/start before storing).",
+    "Only link a Google identity to an existing email account when claims.email_verified is true.",
+    "Optional: refresh name/picture from Google on each sign-in instead of only when absent.",
+    "Optional: enforce the fin_g_state cookie match strictly rather than only when the cookie is present."
+  ],
+  "critical_code_review_comments": [
+    "auth.py _frontend_redirect: `safe_next = next_path if next_path.startswith('/')` is insufficient — '//evil.com' passes; the frontend's navigate(next) then leaves the app. Reject '//' and backslash-prefixed values.",
+    "auth.py is 667 lines and mixes email/password, Google (2 flows), Apple, PIN, reset and onboarding. Consider splitting into auth/oauth_google.py, auth/pin.py etc. before it exceeds 700 lines.",
+    "Good: client_secret is read from env inside the handler and only ever posted to oauth2.googleapis.com; failures log status code only. Confirmed no leak.",
+    "GET /api/goals does not exist (405) — goals are only returned inside /api/financial/overview. Intentional per current design, but worth documenting in test_credentials.md as the endpoint list there is misleading."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_google_oauth_authcode.py (new)",
+    "/app/backend/tests/check_oauth_state_doc.py (new)",
+    "/app/backend/tests/test_auth_phase2.py (updated 2 stale assertions: Google is now configured -> config flags true, /auth/google fake credential now 401 instead of 503)"
+  ],
+  "success_rate": {"backend": "100% (25/25 new OAuth tests; 33 passed/5 skipped on existing regression suites)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Ephemeral: one TEST_g_*@qa.finaura.dev user created and deleted per run; one TEST_oauth_goal created and deleted; oauth_states rows created by start-endpoint tests (auto-expire via TTL, one manually deleted).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "/app/memory/test_credentials.md — testuser@finaura.dev / testpass123 (valid, login works). Real Google account required for the happy-path end-to-end sign-in; all error/failure branches were exercised instead.",
+  "context_for_next_testing_agent": "Run `pytest tests/test_google_oauth_authcode.py` from /app/backend for the full OAuth auth-code regression suite (config, start, all callback error branches, state single-use/CSRF, secret-leak grep, indexes). The happy path (real Google account -> #access_token in fragment -> GoogleCallback.jsx applyExternalSession) is still UNVERIFIED end-to-end. Known open item: protocol-relative `next` open-redirect. test_auth_phase2.py assertions were updated because Google is now configured in this env.",
+  "rca_of_the_issue": "Open redirect: /api/auth/google/start stores the raw `next` value (truncated to 200 chars) and _frontend_redirect only validates `startswith('/')`. '//evil.com' satisfies that check, is echoed as ?next=//evil.com, and GoogleCallback.jsx calls navigate(next) after a successful session, which the browser resolves as a protocol-relative external URL. Reproduce: GET /api/auth/google/start?next=//evil.com then complete/observe the callback Location header."
+}
