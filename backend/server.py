@@ -94,6 +94,22 @@ class GoalInput(BaseModel):
     priority: str = "Medium"
     monthly_contribution: int = 0
     emoji: Optional[str] = "✦"
+    order: Optional[int] = None
+
+
+class GoalReorderInput(BaseModel):
+    ordered_ids: list[str]
+
+
+class GoalPatchInput(BaseModel):
+    name: Optional[str] = None
+    target_amount: Optional[int] = None
+    current_amount: Optional[int] = None
+    deadline: Optional[str] = None
+    priority: Optional[str] = None
+    monthly_contribution: Optional[int] = None
+    emoji: Optional[str] = None
+    order: Optional[int] = None
 
 
 class CategoryUpdate(BaseModel):
@@ -173,11 +189,25 @@ def _compute_spending(transactions: list) -> list:
     return [{"name": k, "value": v, "color": palette.get(k, "#cbd5e1")} for k, v in totals.items()]
 
 
+_PRIORITY_RANK = {"High": 0, "Medium": 1, "Low": 2}
+
+
+async def _load_ordered_goals(uid: str) -> list:
+    """Return goals sorted by (order asc, priority High->Low, created_at asc)."""
+    raw = [_clean(g) for g in await db.finaura_goals.find({"user_id": uid}).to_list(200)]
+    def _key(g):
+        return (
+            g.get("order") if g.get("order") is not None else 10_000,
+            _PRIORITY_RANK.get(g.get("priority", "Medium"), 1),
+            str(g.get("created_at", "")),
+        )
+    return sorted(raw, key=_key)
+
+
 @api_router.get("/financial/overview")
 async def overview(user=Depends(get_current_user)):
     uid = str(user["_id"])
-    goals_cursor = db.finaura_goals.find({"user_id": uid})
-    goals = [_clean(g) for g in await goals_cursor.to_list(50)]
+    goals = await _load_ordered_goals(uid)
     txns_cursor = db.finaura_transactions.find({"user_id": uid})
     transactions = [_clean(t) for t in await txns_cursor.to_list(200)]
     profile = user.get("profile") or {}
@@ -258,19 +288,122 @@ async def update_profile(body: ProfileInput, user=Depends(get_current_user)):
     return {"ok": True}
 
 
+# ============ Settings preferences ============
+
+DEFAULT_PREFERENCES = {
+    "currency": "INR",
+    "date_format": "DD-MM-YYYY",
+    "theme": "system",  # light | dark | system
+    "language": "en",
+    "goal_default_priority": "Medium",
+    "goal_default_deadline_years": 5,
+    "budget_alert_threshold_pct": 80,
+    "notifications": {
+        "goal_reminders": True,
+        "budget_alerts": True,
+        "payment_reminders": True,
+        "financial_insights": True,
+        "ai_recommendations": True,
+        "weekly_digest": False,
+    },
+    "reports": {
+        "monthly_summary": True,
+    },
+}
+
+
+def _merge_prefs(saved: dict) -> dict:
+    """Deep-merge saved prefs onto defaults so newly added keys always exist."""
+    out = {k: (v.copy() if isinstance(v, dict) else v) for k, v in DEFAULT_PREFERENCES.items()}
+    saved = saved or {}
+    for k, v in saved.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = {**out[k], **v}
+        else:
+            out[k] = v
+    return out
+
+
+class PreferencesInput(BaseModel):
+    currency: Optional[str] = None
+    date_format: Optional[str] = None
+    theme: Optional[str] = None
+    language: Optional[str] = None
+    goal_default_priority: Optional[str] = None
+    goal_default_deadline_years: Optional[int] = None
+    budget_alert_threshold_pct: Optional[int] = None
+    notifications: Optional[dict] = None
+    reports: Optional[dict] = None
+
+
+@api_router.get("/settings/preferences")
+async def get_preferences(user=Depends(get_current_user)):
+    return _merge_prefs(user.get("preferences") or {})
+
+
+@api_router.patch("/settings/preferences")
+async def update_preferences(body: PreferencesInput, user=Depends(get_current_user)):
+    current = _merge_prefs(user.get("preferences") or {})
+    updates = body.model_dump(exclude_none=True)
+    # Deep-merge nested dicts
+    for k, v in updates.items():
+        if isinstance(v, dict) and isinstance(current.get(k), dict):
+            current[k] = {**current[k], **v}
+        else:
+            current[k] = v
+    # Enum validation (soft — bad values fall back to default)
+    if current.get("theme") not in {"light", "dark", "system"}:
+        current["theme"] = "system"
+    if current.get("goal_default_priority") not in {"High", "Medium", "Low"}:
+        current["goal_default_priority"] = "Medium"
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"preferences": current, "updated_at": datetime.now(timezone.utc)}},
+    )
+    return current
+
+
+@api_router.get("/settings/export")
+async def export_data(user=Depends(get_current_user)):
+    """Return the user's full financial data for download (JSON)."""
+    uid = str(user["_id"])
+    goals = [_clean(g) for g in await db.finaura_goals.find({"user_id": uid}).to_list(500)]
+    txns = [_clean(t) for t in await db.finaura_transactions.find({"user_id": uid}).to_list(5000)]
+    memories = [_clean(m) for m in await db.finaura_memories.find({"user_id": uid}).to_list(500)]
+    return {
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "user": {
+            "name": user.get("name"),
+            "email": user.get("email"),
+            "profile": user.get("profile") or {},
+            "preferences": _merge_prefs(user.get("preferences") or {}),
+        },
+        "goals": goals,
+        "transactions": txns,
+        "memories": memories,
+    }
+
+
 @api_router.post("/goals")
 async def create_goal(goal: GoalInput, user=Depends(get_current_user)):
+    uid = str(user["_id"])
     doc = goal.model_dump()
+    if doc.get("order") is None:
+        # place new goal at the end
+        count = await db.finaura_goals.count_documents({"user_id": uid})
+        doc["order"] = count
     doc["id"] = str(uuid.uuid4())
-    doc["user_id"] = str(user["_id"])
+    doc["user_id"] = uid
     doc["created_at"] = datetime.now(timezone.utc)
     await db.finaura_goals.insert_one(doc)
     return _clean(dict(doc))
 
 
 @api_router.patch("/goals/{goal_id}")
-async def update_goal(goal_id: str, goal: GoalInput, user=Depends(get_current_user)):
-    doc = goal.model_dump()
+async def update_goal(goal_id: str, goal: GoalPatchInput, user=Depends(get_current_user)):
+    doc = goal.model_dump(exclude_none=True)
+    if not doc:
+        raise HTTPException(status_code=400, detail="No fields to update.")
     result = await db.finaura_goals.update_one(
         {"id": goal_id, "user_id": str(user["_id"])},
         {"$set": doc},
@@ -278,6 +411,26 @@ async def update_goal(goal_id: str, goal: GoalInput, user=Depends(get_current_us
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Goal not found")
     return {"id": goal_id, **doc}
+
+
+@api_router.post("/goals/reorder")
+async def reorder_goals(body: GoalReorderInput, user=Depends(get_current_user)):
+    """Persist the exact goal order the user has chosen (drag/drop or arrows).
+    Any goal not in ordered_ids is left where it was after the reordered ones."""
+    uid = str(user["_id"])
+    # Verify all ids belong to this user (server-side authz)
+    owned = {g["id"] async for g in db.finaura_goals.find({"user_id": uid}, {"id": 1})}
+    unknown = [gid for gid in body.ordered_ids if gid not in owned]
+    if unknown:
+        raise HTTPException(status_code=404, detail="Some goals do not belong to you or don't exist.")
+    from pymongo import UpdateOne
+    ops = [
+        UpdateOne({"id": gid, "user_id": uid}, {"$set": {"order": idx}})
+        for idx, gid in enumerate(body.ordered_ids)
+    ]
+    if ops:
+        await db.finaura_goals.bulk_write(ops)
+    return {"reordered": len(ops)}
 
 
 @api_router.delete("/goals/{goal_id}")
@@ -486,7 +639,7 @@ app.include_router(build_passkey_router(db, get_current_user), prefix="/api")
 app.include_router(build_statements_router(db, get_current_user), prefix="/api")
 app.include_router(build_memory_router(db, get_current_user), prefix="/api")
 app.include_router(build_learn_router(db, get_current_user), prefix="/api")
-app.include_router(build_whatif_router(get_current_user), prefix="/api")
+app.include_router(build_whatif_router(get_current_user, db), prefix="/api")
 app.include_router(api_router)
 
 app.add_middleware(

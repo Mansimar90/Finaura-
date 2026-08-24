@@ -371,6 +371,8 @@ function Goals({ data, isDemo, reload }) {
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState({ name: '', target_amount: 500000, current_amount: 0, deadline: '2030', priority: 'Medium', monthly_contribution: 10000, emoji: '✦' });
   const [error, setError] = useState('');
+  const [dragId, setDragId] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null); // goal object
   useEffect(() => setGoals(data.goals), [data.goals]);
   const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const openNew = () => { setEditingId(null); setForm({ name: '', target_amount: 500000, current_amount: 0, deadline: '2030', priority: 'Medium', monthly_contribution: 10000, emoji: '✦' }); setShow(true); };
@@ -386,28 +388,77 @@ function Goals({ data, isDemo, reload }) {
       await reload?.();
     } catch (e) { setError("We couldn't save that goal. Please try again."); }
   };
-  const remove = async (g) => {
+  const askDelete = (g) => {
     if (isDemo) { navigate('/signup'); return; }
-    if (!window.confirm(`Delete goal "${g.name}"? This cannot be undone.`)) return;
-    try { await api.delete(`/goals/${g.id}`); await reload?.(); } catch {}
+    setConfirmDelete(g);
   };
+  const doDelete = async () => {
+    if (!confirmDelete) return;
+    try { await api.delete(`/goals/${confirmDelete.id}`); await reload?.(); } catch {}
+    setConfirmDelete(null);
+  };
+
+  const persistOrder = async (ordered) => {
+    if (isDemo) return;
+    try {
+      await api.post('/goals/reorder', { ordered_ids: ordered.map((g) => g.id) });
+    } catch (e) {
+      setError("We couldn't save the new order. Refreshing your goals…");
+      await reload?.();
+    }
+  };
+  const moveTo = (idx, target) => {
+    if (target < 0 || target >= goals.length || idx === target) return;
+    const next = [...goals];
+    const [item] = next.splice(idx, 1);
+    next.splice(target, 0, item);
+    setGoals(next);
+    persistOrder(next);
+  };
+  const onDragStart = (e, id) => { setDragId(id); e.dataTransfer.effectAllowed = 'move'; };
+  const onDragOver = (e, targetId) => {
+    e.preventDefault();
+    if (!dragId || dragId === targetId) return;
+    const fromIdx = goals.findIndex((g) => g.id === dragId);
+    const toIdx = goals.findIndex((g) => g.id === targetId);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const next = [...goals];
+    const [item] = next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, item);
+    setGoals(next);
+  };
+  const onDragEnd = () => { if (dragId) persistOrder(goals); setDragId(null); };
+
   return (
     <>
       <div className="page-intro">
-        <div><div className="eyebrow">Prioritize what matters</div><h2>Goals & priorities</h2><p>Give every rupee a purpose, then choose what comes first.</p></div>
+        <div><div className="eyebrow">Prioritize what matters</div><h2>Goals & priorities</h2><p>Give every rupee a purpose, then choose what comes first. Drag cards to reorder, or use ↑ ↓ arrows.</p></div>
         <button data-testid="create-goal-button" className="primary-btn" onClick={openNew}><Plus size={17} /> New goal</button>
       </div>
       {goals.length === 0 && <p style={{ padding: '30px 0', color: '#8b9995' }}>No goals yet. Create your first goal to see it here.</p>}
       <div className="goals-grid">
-        {goals.map((g) => (
-          <Card className={`goal-card ${g.priority.toLowerCase()}`} key={g.id} data-testid={`goal-card-${g.id}`}>
+        {goals.map((g, idx) => {
+          const prio = (g.priority || 'Medium');
+          const prioLower = prio.toLowerCase();
+          return (
+          <Card
+            className={`goal-card ${prioLower} ${dragId === g.id ? 'dragging' : ''}`}
+            key={g.id}
+            data-testid={`goal-card-${g.id}`}
+            draggable={!isDemo}
+            onDragStart={(e) => onDragStart(e, g.id)}
+            onDragOver={(e) => onDragOver(e, g.id)}
+            onDragEnd={onDragEnd}
+          >
             <div className="goal-card-top">
               <span className="goal-emoji large">{g.emoji || '✦'}</span>
-              <span className={`priority ${g.priority.toLowerCase()}`}>{g.priority} priority</span>
+              <span className={`priority ${prioLower}`}>{prio} priority</span>
               {!isDemo && (
                 <div className="goal-actions">
+                  <button className="icon-btn" data-testid={`move-up-${g.id}`} onClick={() => moveTo(idx, idx - 1)} disabled={idx === 0} title="Move up">↑</button>
+                  <button className="icon-btn" data-testid={`move-down-${g.id}`} onClick={() => moveTo(idx, idx + 1)} disabled={idx === goals.length - 1} title="Move down">↓</button>
                   <button className="icon-btn" data-testid={`edit-goal-${g.id}`} onClick={() => openEdit(g)} title="Edit"><Edit3 size={14}/></button>
-                  <button className="icon-btn" data-testid={`delete-goal-${g.id}`} onClick={() => remove(g)} title="Delete"><Trash2 size={14}/></button>
+                  <button className="icon-btn" data-testid={`delete-goal-${g.id}`} onClick={() => askDelete(g)} title="Delete"><Trash2 size={14}/></button>
                 </div>
               )}
             </div>
@@ -417,7 +468,8 @@ function Goals({ data, isDemo, reload }) {
             <div className="goal-meta"><span>{pct(g.current_amount, g.target_amount)}% complete</span><span>Due {g.deadline}</span></div>
             <div className="goal-requirement"><span>Monthly contribution</span><b>{money(g.monthly_contribution)} / mo</b></div>
           </Card>
-        ))}
+          );
+        })}
       </div>
       {show && (
         <div className="modal-backdrop">
@@ -444,6 +496,24 @@ function Goals({ data, isDemo, reload }) {
               <input data-testid="goal-monthly-input" type="number" min="0" value={form.monthly_contribution} onChange={(e) => upd('monthly_contribution', e.target.value)} /></div>
             <button data-testid="save-goal-button" className="primary-btn full" onClick={save}>{isDemo ? 'Sign up to save' : (editingId ? 'Update goal' : 'Save goal')}</button>
             {error && <div className="error-message" data-testid="goal-save-error">{error}</div>}
+          </div>
+        </div>
+      )}
+      {confirmDelete && (
+        <div className="modal-backdrop">
+          <div className="modal" data-testid="confirm-delete-modal">
+            <button className="modal-close" onClick={() => setConfirmDelete(null)}>×</button>
+            <div className="eyebrow" style={{ color: '#a83932' }}>Delete goal</div>
+            <h3>Delete "{confirmDelete.name}"?</h3>
+            <p style={{ color: '#556b60', fontSize: 13, lineHeight: 1.6, margin: '8px 0 18px' }}>
+              This goal and its progress will be permanently removed from your account. This action cannot be undone.
+            </p>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="pill-btn" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setConfirmDelete(null)} data-testid="confirm-delete-cancel">Cancel</button>
+              <button className="danger-btn" style={{ flex: 1, justifyContent: 'center' }} onClick={doDelete} data-testid="confirm-delete-confirm">
+                <Trash2 size={14} /> Delete goal
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -840,19 +910,178 @@ function AccountEditSection() {
   );
 }
 
+function usePreferences() {
+  const [prefs, setPrefs] = useState(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { api.get('/settings/preferences').then((r) => setPrefs(r.data)).catch(() => setPrefs({})); }, []);
+  const save = async (patch) => {
+    setSaving(true);
+    try {
+      const { data } = await api.patch('/settings/preferences', patch);
+      setPrefs(data);
+      return data;
+    } finally { setSaving(false); }
+  };
+  return { prefs, save, saving };
+}
+
+function PrefRow({ label, children }) {
+  return (
+    <div className="pref-row">
+      <label>{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function FinancialPreferencesSection() {
+  const { prefs, save, saving } = usePreferences();
+  const [msg, setMsg] = useState('');
+  if (!prefs) return <div className="account-card"><p style={{fontSize:12,color:'#8b9995'}}>Loading preferences…</p></div>;
+  const onChange = async (k, v) => {
+    await save({ [k]: v });
+    setMsg('Saved.'); setTimeout(() => setMsg(''), 1200);
+  };
+  return (
+    <div className="account-card" data-testid="financial-preferences-section">
+      <h3>Financial preferences</h3>
+      <p style={{fontSize:12,color:'#556b60',margin:'0 0 14px',lineHeight:1.55}}>Set your defaults for new goals, budgets and reports. Applies right away.</p>
+      <div className="pref-grid">
+        <PrefRow label="Currency">
+          <select data-testid="pref-currency" value={prefs.currency || 'INR'} onChange={(e) => onChange('currency', e.target.value)} className="pref-select">
+            <option value="INR">₹ Indian Rupee (INR)</option>
+            <option value="USD">$ US Dollar (USD)</option>
+            <option value="EUR">€ Euro (EUR)</option>
+            <option value="GBP">£ British Pound (GBP)</option>
+          </select>
+        </PrefRow>
+        <PrefRow label="Date format">
+          <select data-testid="pref-date-format" value={prefs.date_format || 'DD-MM-YYYY'} onChange={(e) => onChange('date_format', e.target.value)} className="pref-select">
+            <option>DD-MM-YYYY</option>
+            <option>MM-DD-YYYY</option>
+            <option>YYYY-MM-DD</option>
+          </select>
+        </PrefRow>
+        <PrefRow label="Default goal priority">
+          <select data-testid="pref-goal-priority" value={prefs.goal_default_priority || 'Medium'} onChange={(e) => onChange('goal_default_priority', e.target.value)} className="pref-select">
+            <option>High</option><option>Medium</option><option>Low</option>
+          </select>
+        </PrefRow>
+        <PrefRow label="Default goal timeline (years)">
+          <input data-testid="pref-goal-years" type="number" min="1" max="40" value={prefs.goal_default_deadline_years || 5} onChange={(e) => onChange('goal_default_deadline_years', Number(e.target.value))} className="pref-input" />
+        </PrefRow>
+        <PrefRow label="Budget alert threshold (%)">
+          <input data-testid="pref-budget-threshold" type="number" min="10" max="100" value={prefs.budget_alert_threshold_pct || 80} onChange={(e) => onChange('budget_alert_threshold_pct', Number(e.target.value))} className="pref-input" />
+        </PrefRow>
+      </div>
+      {(saving || msg) && <div className="pref-save-hint" data-testid="pref-save-hint">{saving ? 'Saving…' : msg}</div>}
+    </div>
+  );
+}
+
+function NotificationsSection() {
+  const { prefs, save, saving } = usePreferences();
+  if (!prefs) return <div className="account-card"><p style={{fontSize:12,color:'#8b9995'}}>Loading notifications…</p></div>;
+  const notif = prefs.notifications || {};
+  const toggle = (k) => save({ notifications: { [k]: !notif[k] } });
+  const OPTIONS = [
+    ['goal_reminders', 'Goal reminders', 'Nudges when a goal is behind schedule.'],
+    ['budget_alerts', 'Budget alerts', 'When category spending crosses your alert threshold.'],
+    ['payment_reminders', 'Payment reminders', 'Upcoming bills, EMIs and subscriptions.'],
+    ['financial_insights', 'Financial insights', 'Weekly highlights of trends and wins.'],
+    ['ai_recommendations', 'AI recommendations', 'Personalised nudges from FINAURA AI.'],
+    ['weekly_digest', 'Weekly digest email', 'A Sunday-night snapshot of your finances.'],
+  ];
+  return (
+    <div className="account-card" data-testid="notifications-section">
+      <h3>Notifications</h3>
+      <p style={{fontSize:12,color:'#556b60',margin:'0 0 14px',lineHeight:1.55}}>Choose what FINAURA AI can ping you about. All notifications are opt-in.</p>
+      <div className="notif-list">
+        {OPTIONS.map(([k, label, hint]) => (
+          <div key={k} className="notif-row" data-testid={`notif-row-${k}`}>
+            <div>
+              <strong>{label}</strong>
+              <p>{hint}</p>
+            </div>
+            <button
+              type="button"
+              className={`toggle ${notif[k] ? 'on' : ''}`}
+              data-testid={`notif-toggle-${k}`}
+              aria-pressed={!!notif[k]}
+              onClick={() => toggle(k)}
+            >
+              <i></i>
+            </button>
+          </div>
+        ))}
+      </div>
+      {saving && <div className="pref-save-hint">Saving…</div>}
+    </div>
+  );
+}
+
+function DataManagementSection({ onReset, deleted }) {
+  const [busy, setBusy] = useState(false);
+  const doExport = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.get('/settings/export');
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `finaura-export-${new Date().toISOString().slice(0,10)}.json`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (_) { /* noop */ } finally { setBusy(false); }
+  };
+  return (
+    <div className="account-card" data-testid="data-management-section">
+      <h3>Data management</h3>
+      <p style={{fontSize:12,color:'#556b60',margin:'0 0 14px',lineHeight:1.55}}>Export a full copy of your Finaura data any time, or start fresh.</p>
+      <div className="rows">
+        <div>
+          <span>Export all data</span>
+          <strong>
+            <button className="pill-btn mint" data-testid="export-data-button" onClick={doExport} disabled={busy}>
+              {busy ? 'Preparing…' : 'Download JSON'}
+            </button>
+          </strong>
+        </div>
+        <div>
+          <span>Reset financial data</span>
+          <strong>
+            <button className="pill-btn" data-testid="reset-financial-data-button" onClick={onReset}>
+              <Trash2 size={13} /> Reset finances
+            </button>
+          </strong>
+        </div>
+      </div>
+      {deleted && <div className="deleted-message" data-testid="data-deleted-message">Your saved goals and transactions have been deleted.</div>}
+    </div>
+  );
+}
+
+
+
 function Settings({ isDemo, reload }) {
   const { user, removePin, setPin, logout, refreshMe, formatApiError } = useAuth();
   const navigate = useNavigate();
+  const [tab, setTab] = useState('account');
   const [deleted, setDeleted] = useState(false);
   const [pinModal, setPinModal] = useState(null); // 'set' | 'remove' | null
   const [pinValue, setPinValue] = useState('');
   const [currentPin, setCurrentPin] = useState('');
   const [pinError, setPinError] = useState('');
   const [pinBusy, setPinBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const handleDelete = async () => {
+  const handleDeleteClick = () => {
     if (isDemo) { navigate('/signup'); return; }
+    setConfirmDelete(true);
+  };
+  const performDelete = async () => {
     try { await api.delete('/financial/data'); setDeleted(true); await refreshMe(); reload?.(); } catch {}
+    setConfirmDelete(false);
   };
   const closePinModal = () => { setPinModal(null); setPinValue(''); setCurrentPin(''); setPinError(''); };
   const submitPin = async () => {
@@ -870,65 +1099,106 @@ function Settings({ isDemo, reload }) {
     finally { setPinBusy(false); }
   };
 
+  const TABS = isDemo
+    ? [{ id: 'appearance', label: 'Appearance' }, { id: 'privacy', label: 'Privacy' }]
+    : [
+        { id: 'account', label: 'Account & Security' },
+        { id: 'preferences', label: 'Financial Preferences' },
+        { id: 'notifications', label: 'Notifications' },
+        { id: 'data', label: 'Data Management' },
+        { id: 'appearance', label: 'Appearance' },
+        { id: 'privacy', label: 'Privacy' },
+      ];
+
+  useEffect(() => {
+    if (isDemo && !['appearance', 'privacy'].includes(tab)) setTab('appearance');
+  }, [isDemo, tab]);
+
   return (
     <>
       <div className="page-intro">
         <div><div className="eyebrow">Trust is a feature</div><h2>Settings & privacy</h2><p>Your financial data belongs to you.</p></div>
       </div>
-      {!isDemo && (
-        <div className="account-card" data-testid="account-card">
-          <h3>Account</h3>
-          <AccountEditSection />
-          <div className="rows">
-            <div><span>Email</span><strong>{user?.email} {user?.email_verified ? <span style={{color:'#087f56',fontSize:11,marginLeft:6}}>· verified</span> : <span style={{color:'#a56800',fontSize:11,marginLeft:6}}>· pending verification</span>}</strong></div>
-            <div><span>Sign-in methods</span><strong>{(user?.providers || []).join(', ') || 'email'}</strong></div>
-            <div>
-              <span>App lock (4-digit PIN)</span>
-              <strong>
-                {user?.has_pin ? (
-                  <button className="pill-btn" data-testid="remove-pin-button" onClick={() => setPinModal('remove')}><KeyRound size={13}/> Change / remove</button>
-                ) : (
-                  <button className="pill-btn mint" data-testid="set-pin-button" onClick={() => setPinModal('set')}><Lock size={13}/> Set PIN</button>
-                )}
-              </strong>
-            </div>
-            <div>
-              <span>Session</span>
-              <strong><button data-testid="settings-sign-out" className="pill-btn" onClick={() => { logout(); navigate('/login'); }}><LogOut size={13}/> Sign out</button></strong>
+
+      <div className="settings-tabs" data-testid="settings-tabs">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            data-testid={`settings-tab-${t.id}`}
+            className={`settings-tab ${tab === t.id ? 'active' : ''}`}
+            onClick={() => setTab(t.id)}
+          >{t.label}</button>
+        ))}
+      </div>
+
+      {tab === 'account' && !isDemo && (
+        <div data-testid="settings-panel-account">
+          <div className="account-card" data-testid="account-card">
+            <h3>Account</h3>
+            <AccountEditSection />
+            <div className="rows">
+              <div><span>Email</span><strong>{user?.email} {user?.email_verified ? <span style={{color:'#087f56',fontSize:11,marginLeft:6}}>· verified</span> : <span style={{color:'#a56800',fontSize:11,marginLeft:6}}>· pending verification</span>}</strong></div>
+              <div><span>Sign-in methods</span><strong>{(user?.providers || []).join(', ') || 'email'}</strong></div>
+              <div>
+                <span>App lock (4-digit PIN)</span>
+                <strong>
+                  {user?.has_pin ? (
+                    <button className="pill-btn" data-testid="remove-pin-button" onClick={() => setPinModal('remove')}><KeyRound size={13}/> Change / remove</button>
+                  ) : (
+                    <button className="pill-btn mint" data-testid="set-pin-button" onClick={() => setPinModal('set')}><Lock size={13}/> Set PIN</button>
+                  )}
+                </strong>
+              </div>
+              <div>
+                <span>Session</span>
+                <strong><button data-testid="settings-sign-out" className="pill-btn" onClick={() => { logout(); navigate('/login'); }}><LogOut size={13}/> Sign out</button></strong>
+              </div>
             </div>
           </div>
+          <PasskeySection />
+          <AiMemorySection />
         </div>
       )}
-      {!isDemo && <PasskeySection />}
-      {!isDemo && <AiMemorySection />}
-      <AppearanceSection />
-      <div className="settings-grid">
-        <Card>
-          <SectionTitle eyebrow="Privacy principles" title="Built with care" />
-          {[['Encrypted in transit', 'Your data travels over HTTPS/TLS.'],
-            ['Encrypted at rest', 'Prototype storage is isolated to your profile.'],
-            ['Password hashing (bcrypt)', 'Your password is one-way hashed; even we can\'t read it.'],
-            ['No bank credentials', 'FINAURA AI never asks for or stores bank passwords.'],
-            ['Delete anytime', 'You can remove your financial information below.']].map(([a, b]) => (
-            <div className="privacy-row" key={a}>
-              <div className="privacy-icon"><LockKeyhole size={16} /></div>
-              <div><strong>{a}</strong><p>{b}</p></div>
-              <Check size={16} className="check" />
-            </div>
-          ))}
-        </Card>
-        <Card className="danger-card">
-          <div className="eyebrow">Data controls</div>
-          <h3>Prototype status</h3>
-          <p>{isDemo ? 'You\'re viewing the fictional Aarav Sharma demo. Sign up to save your own data.' : 'Security features shown here are prototype implementations, not a production audit or certification.'}</p>
-          {!isDemo && (
-            <>
-              <button data-testid="delete-data-button" className="danger-btn" onClick={handleDelete}><Trash2 size={16} /> Delete my financial data</button>
-              {deleted && <div className="deleted-message" data-testid="data-deleted-message">Your saved goals and transactions have been deleted.</div>}
-            </>
-          )}
-        </Card>
-      </div>
+
+      {tab === 'preferences' && !isDemo && (
+        <div data-testid="settings-panel-preferences"><FinancialPreferencesSection /></div>
+      )}
+
+      {tab === 'notifications' && !isDemo && (
+        <div data-testid="settings-panel-notifications"><NotificationsSection /></div>
+      )}
+
+      {tab === 'data' && !isDemo && (
+        <div data-testid="settings-panel-data"><DataManagementSection onReset={handleDeleteClick} deleted={deleted} /></div>
+      )}
+
+      {tab === 'appearance' && (
+        <div data-testid="settings-panel-appearance"><AppearanceSection /></div>
+      )}
+
+      {tab === 'privacy' && (
+        <div data-testid="settings-panel-privacy" className="settings-grid">
+          <Card>
+            <SectionTitle eyebrow="Privacy principles" title="Built with care" />
+            {[['Encrypted in transit', 'Your data travels over HTTPS/TLS.'],
+              ['Encrypted at rest', 'Prototype storage is isolated to your profile.'],
+              ['Password hashing (bcrypt)', 'Your password is one-way hashed; even we can\'t read it.'],
+              ['No bank credentials', 'FINAURA AI never asks for or stores bank passwords.'],
+              ['Delete anytime', 'You can remove your financial information from Data Management.']].map(([a, b]) => (
+              <div className="privacy-row" key={a}>
+                <div className="privacy-icon"><LockKeyhole size={16} /></div>
+                <div><strong>{a}</strong><p>{b}</p></div>
+                <Check size={16} className="check" />
+              </div>
+            ))}
+          </Card>
+          <Card className="danger-card">
+            <div className="eyebrow">Prototype status</div>
+            <h3>Prototype notice</h3>
+            <p>{isDemo ? 'You\'re viewing the fictional Aarav Sharma demo. Sign up to save your own data.' : 'Security features shown here are prototype implementations, not a production audit or certification.'}</p>
+          </Card>
+        </div>
+      )}
 
       {pinModal && (
         <div className="modal-backdrop">
@@ -944,6 +1214,26 @@ function Settings({ isDemo, reload }) {
             <button className="auth-btn" data-testid="pin-modal-submit" onClick={submitPin} disabled={pinBusy}>
               {pinBusy ? 'Working…' : (pinModal === 'set' ? 'Save PIN' : 'Remove PIN')}
             </button>
+          </div>
+        </div>
+      )}
+
+      {confirmDelete && (
+        <div className="modal-backdrop">
+          <div className="modal" data-testid="confirm-reset-modal">
+            <button className="modal-close" onClick={() => setConfirmDelete(false)}>×</button>
+            <div className="eyebrow" style={{ color: '#a83932' }}>Reset data</div>
+            <h3>Delete all your financial data?</h3>
+            <p style={{ color: '#556b60', fontSize: 13, lineHeight: 1.6, margin: '8px 0 18px' }}>
+              This removes all goals, transactions, and imported data from your account. Your login stays intact.
+              This action cannot be undone.
+            </p>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="pill-btn" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setConfirmDelete(false)} data-testid="confirm-reset-cancel">Cancel</button>
+              <button className="danger-btn" style={{ flex: 1, justifyContent: 'center' }} onClick={performDelete} data-testid="confirm-reset-confirm">
+                <Trash2 size={14} /> Yes, delete everything
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1004,7 +1294,7 @@ function AppWorkspace({ mode }) {
     '/statements': <Statements data={data} isDemo={isDemo} reload={reload} />,
     '/analysis': <Analysis data={data} />,
     '/goals': <Goals data={data} isDemo={isDemo} reload={reload} />,
-    '/whatif': <WhatIf data={data} isDemo={isDemo} />,
+    '/whatif': <WhatIf isDemo={isDemo} />,
     '/changes': <Changes data={data} />,
     '/learn': <Learn isDemo={isDemo} />,
     '/ask': <Ask isDemo={isDemo} userName={data.user?.name} />,

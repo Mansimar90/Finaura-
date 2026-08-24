@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
+import os
 from datetime import date, datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from motor.motor_asyncio import AsyncIOMotorDatabase
+
+log = logging.getLogger("finaura.features")
 
 # --------- LEARN CONTENT ----------
 
@@ -186,7 +191,7 @@ def _project_balance(current: float, monthly_save: float, months: int, annual_ra
     return round(balance, 2)
 
 
-def build_whatif_router(get_current_user):
+def build_whatif_router(get_current_user, db: Optional[AsyncIOMotorDatabase] = None):
     router = APIRouter(prefix="/whatif", tags=["whatif"])
 
     @router.post("")
@@ -222,4 +227,314 @@ def build_whatif_router(get_current_user):
             "disclaimer": "Projections are educational estimates only. Actual returns depend on market conditions and are not guaranteed. Consult a qualified financial advisor for personalised planning.",
         }
 
+    # ---------- AI PURCHASE SCENARIO ----------
+
+    @router.post("/scenario")
+    async def scenario(body: ScenarioInput, user=Depends(get_current_user)):
+        """Analyse a hypothetical purchase across 4 outcomes.
+
+        Reads the user's actual finances + goals (never mutates them) and
+        computes deterministic financial impact per option, then asks the
+        LLM to add reasoning + a best recommendation.
+        """
+        if db is None:
+            raise HTTPException(500, "Simulator not initialised.")
+        uid = str(user["_id"])
+        # 1. Snapshot user financial state (read-only)
+        profile = user.get("profile") or {}
+        income = int(profile.get("monthly_income", 0) or 0)
+        expenses = int(profile.get("monthly_expenses", 0) or 0)
+        savings = int(profile.get("current_savings", 0) or 0)
+        investments = int(profile.get("investments", 0) or 0)
+        emi = int(profile.get("emi", 0) or 0)
+        monthly_free_cash = max(0, income - expenses - emi)
+
+        raw_goals = [
+            {k: v for k, v in g.items() if k not in ("_id",)}
+            for g in await db.finaura_goals.find({"user_id": uid}).to_list(200)
+        ]
+
+        options = [
+            _compute_scenario_option("buy_now", body, savings, monthly_free_cash, raw_goals, months_delay=0),
+            _compute_scenario_option("after_3m", body, savings, monthly_free_cash, raw_goals, months_delay=3),
+            _compute_scenario_option("after_6m", body, savings, monthly_free_cash, raw_goals, months_delay=6),
+        ]
+
+        # 2. Ask the LLM to reason over the deterministic options and pick a best one
+        ai = await _ai_recommendation(body, options, {
+            "income": income, "expenses": expenses, "savings": savings,
+            "investments": investments, "emi": emi, "free_cash": monthly_free_cash,
+        }, raw_goals)
+
+        # 3. Attach AI reasoning to each option, then build a synthesised best_option
+        by_id = {o["id"]: o for o in options}
+        for reasoning in ai.get("option_analysis", []):
+            oid = reasoning.get("id")
+            if oid in by_id:
+                by_id[oid]["ai_note"] = reasoning.get("note", "")
+                by_id[oid]["pros"] = reasoning.get("pros", by_id[oid].get("pros", []))
+                by_id[oid]["cons"] = reasoning.get("cons", by_id[oid].get("cons", []))
+
+        best_id = ai.get("best_option_id") or "after_3m"
+        best_option = dict(by_id.get(best_id, options[1]))
+        best_option["id"] = "best"
+        best_option["label"] = f"AI Best — {best_option.get('label', '').replace(' (AI Best)', '')}"
+        best_option["ai_recommendation"] = ai.get("recommendation", "")
+        best_option["ai_reasoning"] = ai.get("reasoning", "")
+
+        return {
+            "scenario": body.model_dump(),
+            "user_snapshot": {
+                "monthly_income": income, "monthly_expenses": expenses,
+                "current_savings": savings, "investments": investments,
+                "emi": emi, "monthly_free_cash": monthly_free_cash,
+                "goal_count": len(raw_goals),
+            },
+            "options": options + [best_option],
+            "ai_available": ai.get("ai_available", False),
+            "disclaimer": "This is a hypothetical simulation. No real financial data is modified. AI analysis is educational and not personalised financial advice.",
+        }
+
+    @router.post("/scenario/apply")
+    async def apply_scenario(body: ApplyScenarioInput, user=Depends(get_current_user)):
+        """Pin the chosen scenario as a long-term memory so the AI chat remembers it.
+        This does NOT mutate goals, transactions or balances."""
+        if db is None:
+            raise HTTPException(500, "Simulator not initialised.")
+        uid = str(user["_id"])
+        now = datetime.now(timezone.utc)
+        key = f"whatif_plan_{body.scenario_name[:60].strip().lower().replace(' ', '_')}_{int(now.timestamp())}"
+        summary = (
+            f"User has chosen the '{body.option_label}' plan for '{body.scenario_name}' "
+            f"(₹{body.amount:,}). {body.summary}"
+        )
+        await db.finaura_memories.insert_one({
+            "id": key,
+            "user_id": uid,
+            "category": "plan",
+            "key": key,
+            "value": summary,
+            "numeric_value": body.amount,
+            "unit": "INR",
+            "source": "whatif_simulator",
+            "created_at": now,
+            "updated_at": now,
+        })
+        return {"pinned": True, "memory_id": key}
+
     return router
+
+
+# ---------- SCENARIO HELPERS ----------
+
+class ScenarioInput(BaseModel):
+    item_name: str = Field(min_length=1, max_length=120)
+    amount: int = Field(gt=0, le=10_00_00_000)  # 10 crore ceiling
+    category: Optional[str] = None
+    recurring_monthly_cost: Optional[int] = Field(default=None, ge=0, le=10_00_000)
+    purchase_date: Optional[str] = None  # ISO date; informational
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class ApplyScenarioInput(BaseModel):
+    scenario_name: str = Field(min_length=1, max_length=120)
+    amount: int = Field(gt=0)
+    option_label: str
+    summary: str = Field(max_length=800)
+
+
+def _compute_scenario_option(oid: str, body: ScenarioInput, savings: int, monthly_free_cash: int,
+                             goals: list, months_delay: int) -> dict:
+    """Deterministic financial impact of the given purchase timing."""
+    labels = {
+        "buy_now": "Buy Now",
+        "after_3m": "After 3 Months",
+        "after_6m": "After 6 Months",
+    }
+    label = labels.get(oid, oid)
+    # Savings the user will accumulate before purchase (assumes all free cash saved during wait)
+    saved_before_purchase = monthly_free_cash * months_delay
+    cash_available_at_purchase = savings + saved_before_purchase
+    price = body.amount
+    recurring = body.recurring_monthly_cost or 0
+
+    # Cash impact
+    remaining_cash = cash_available_at_purchase - price
+    dips_into_savings = price > cash_available_at_purchase - savings if months_delay == 0 else remaining_cash < savings * 0.5
+
+    # Goal impact — approximate months of delay per active goal
+    # Formula: (price - savings_you_would_have_used_from_free_cash) / monthly_contribution
+    goal_impacts = []
+    for g in goals:
+        monthly = int(g.get("monthly_contribution") or 0)
+        current = int(g.get("current_amount") or 0)
+        target = int(g.get("target_amount") or 0)
+        if target <= current:
+            continue
+        # How much of this goal's future contributions the purchase effectively consumes
+        drain = max(0, price - saved_before_purchase)  # what the purchase pulls from savings pool
+        # Distribute drain across goals by priority weight
+        prio_weight = {"High": 1.5, "Medium": 1.0, "Low": 0.6}.get(g.get("priority", "Medium"), 1.0)
+        weighted_drain = drain * prio_weight / max(1, len(goals))
+        months_added = int(round(weighted_drain / monthly)) if monthly > 0 else 0
+        if months_added > 0:
+            goal_impacts.append({
+                "goal_id": g.get("id"),
+                "goal_name": g.get("name"),
+                "priority": g.get("priority", "Medium"),
+                "months_delay": months_added,
+            })
+
+    total_goal_delay = sum(gi["months_delay"] for gi in goal_impacts)
+
+    # Health score effect (rough, additive) — for display
+    health_delta = 0
+    if dips_into_savings:
+        health_delta -= 8
+    if recurring:
+        health_delta -= min(6, int(recurring / max(1, monthly_free_cash) * 10))
+    if months_delay > 0 and not dips_into_savings:
+        health_delta += 3
+
+    pros, cons = [], []
+    if months_delay == 0:
+        pros.append("Immediate — you get the item today.")
+        if dips_into_savings:
+            cons.append("Uses a large share of your current savings.")
+        else:
+            pros.append("Fits within your current cash without touching long-term savings.")
+        if goal_impacts:
+            cons.append(f"May delay {len(goal_impacts)} goal(s) by ~{total_goal_delay} month(s) in total.")
+    else:
+        pros.append(f"You save ~₹{saved_before_purchase:,} of free cash before buying.")
+        if remaining_cash > savings * 0.5:
+            pros.append("Preserves at least half of your existing savings buffer.")
+        else:
+            cons.append("Still puts a meaningful dent in your savings.")
+        if total_goal_delay < 3:
+            pros.append("Very small impact on your active goals.")
+        elif goal_impacts:
+            cons.append(f"Goals may still slip by ~{total_goal_delay} month(s).")
+    if recurring:
+        cons.append(f"Adds ₹{recurring:,}/mo recurring cost.")
+
+    return {
+        "id": oid,
+        "label": label,
+        "months_delay": months_delay,
+        "cash_available_at_purchase": cash_available_at_purchase,
+        "remaining_cash_after_purchase": remaining_cash,
+        "dips_into_savings": bool(dips_into_savings),
+        "recurring_monthly_cost": recurring,
+        "total_recurring_first_year": recurring * 12,
+        "goal_impacts": goal_impacts,
+        "total_goal_delay_months": total_goal_delay,
+        "health_score_delta": health_delta,
+        "pros": pros,
+        "cons": cons,
+    }
+
+
+async def _ai_recommendation(body: ScenarioInput, options: list, snapshot: dict, goals: list) -> dict:
+    """Ask Claude Sonnet 5 to reason over the deterministic options and pick the best one.
+    Falls back gracefully if the LLM is unavailable — a rule-based best pick is returned."""
+    fallback_best_id = _rule_based_best(options)
+    fallback = {
+        "ai_available": False,
+        "best_option_id": fallback_best_id,
+        "recommendation": _fallback_recommendation(options, fallback_best_id, body),
+        "reasoning": "Automatic recommendation based on cash buffer and goal impact.",
+        "option_analysis": [],
+    }
+    key = os.environ.get("EMERGENT_LLM_KEY")
+    if not key:
+        return fallback
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+    except Exception:
+        return fallback
+
+    goal_lines = "; ".join(
+        f"{g.get('name')} (priority={g.get('priority')}, target=₹{g.get('target_amount',0):,}, "
+        f"current=₹{g.get('current_amount',0):,}, monthly=₹{g.get('monthly_contribution',0):,})"
+        for g in goals[:10]
+    ) or "no active goals"
+
+    option_json = [{
+        "id": o["id"], "label": o["label"], "months_delay": o["months_delay"],
+        "cash_after": o["remaining_cash_after_purchase"],
+        "dips_into_savings": o["dips_into_savings"],
+        "total_goal_delay_months": o["total_goal_delay_months"],
+        "recurring": o["recurring_monthly_cost"],
+        "health_delta": o["health_score_delta"],
+    } for o in options]
+
+    system = (
+        "You are FINAURA AI's What-If financial simulator. "
+        "Given a user's real Indian personal-finance snapshot and three purchase-timing options that were "
+        "computed deterministically, do TWO things: (1) enrich each option with a short note (max 30 words), "
+        "2 pros, 2 cons; (2) pick exactly one best_option_id ('buy_now' | 'after_3m' | 'after_6m') and write "
+        "a 2-3 sentence recommendation plus 1-2 sentence reasoning. Be specific to the user's data. "
+        "Amounts in INR. Never invent numbers not present in the inputs. Reply with STRICT JSON only, no prose."
+    )
+    prompt = (
+        f"User snapshot: {json.dumps(snapshot)}\n"
+        f"Goals: {goal_lines}\n"
+        f"Purchase: {body.item_name} for ₹{body.amount:,}"
+        + (f" (recurring ₹{body.recurring_monthly_cost:,}/mo)" if body.recurring_monthly_cost else "")
+        + (f", category={body.category}" if body.category else "")
+        + (f", target date={body.purchase_date}" if body.purchase_date else "")
+        + "\n"
+        f"Options: {json.dumps(option_json)}\n\n"
+        'JSON schema: {"best_option_id": "buy_now|after_3m|after_6m",'
+        ' "recommendation": "...", "reasoning": "...",'
+        ' "option_analysis": [{"id": "buy_now|after_3m|after_6m", "note": "...",'
+        '   "pros": ["...","..."], "cons": ["...","..."]}]}'
+    )
+    try:
+        chat = LlmChat(api_key=key, session_id=f"whatif-{int(datetime.now().timestamp())}",
+                       system_message=system).with_model("anthropic", "claude-sonnet-5")
+        resp = await chat.send_message(UserMessage(text=prompt))
+        text = getattr(resp, "text", None) or str(resp)
+        # Extract JSON if wrapped in code fences
+        s = text.strip()
+        if s.startswith("```"):
+            s = s.strip("`")
+            if s.lower().startswith("json"):
+                s = s[4:]
+            s = s.strip()
+        # Locate outer braces
+        first = s.find("{"); last = s.rfind("}")
+        if first < 0 or last < 0:
+            raise ValueError("no json object")
+        parsed = json.loads(s[first : last + 1])
+        best = parsed.get("best_option_id")
+        if best not in {"buy_now", "after_3m", "after_6m"}:
+            best = fallback_best_id
+        return {
+            "ai_available": True,
+            "best_option_id": best,
+            "recommendation": (parsed.get("recommendation") or "")[:600],
+            "reasoning": (parsed.get("reasoning") or "")[:600],
+            "option_analysis": parsed.get("option_analysis") or [],
+        }
+    except Exception as exc:
+        log.warning("AI What-If recommendation failed: %s", exc)
+        return fallback
+
+
+def _rule_based_best(options: list) -> str:
+    """Pick the option with the smallest goal-delay while keeping some savings."""
+    def score(o: dict) -> tuple:
+        # lower is better
+        return (o["total_goal_delay_months"], -o["remaining_cash_after_purchase"], o["months_delay"])
+    return min(options, key=score)["id"]
+
+
+def _fallback_recommendation(options: list, best_id: str, body: ScenarioInput) -> str:
+    opt = next((o for o in options if o["id"] == best_id), options[0])
+    return (
+        f"Based on your cash buffer and current goals, buying '{body.item_name}' "
+        f"{opt['label'].lower()} keeps your goals closest to schedule and preserves the most cash. "
+        f"Estimated goal delay: {opt['total_goal_delay_months']} months."
+    )

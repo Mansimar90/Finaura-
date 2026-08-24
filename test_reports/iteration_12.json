@@ -1,0 +1,58 @@
+{
+  "summary": "Full backend + frontend test of iteration 12 (Goals CRUD/reorder, AI What-If purchase simulator, tabbed Settings). Created /app/backend/tests/test_iteration12.py with 40 pytest cases covering Goals CRUD + reorder + cross-user isolation, Settings preferences (defaults/partial patch/deep-merge/enum coercion), Settings export isolation, What-If scenario (4 options, no-mutation proof, validation, empty-profile path), apply-pin memory-only writes, and regressions (login/me/auth-config/google endpoints/overview/chat streaming/learn/demo). All 40 backend tests PASS. Frontend: Goals page (reorder arrows + persistence + edit + custom delete modal) 100% pass; Settings (6 tabs, currency/threshold/notification persistence across reload, JSON export download, custom reset modal) 100% pass; What-If produced 4 real Claude Sonnet 5 scenario cards. ONE functional frontend bug found: the 'Pinned to AI memory' badge never renders after 'Apply this plan'.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PATCH /api/goals/{id}", "issue": "Uses the full GoalInput model, so name/target_amount/deadline are mandatory on every PATCH. It is not a true partial update - a client that only wants to change priority must resend the whole object."},
+      {"endpoint": "POST /api/whatif/scenario", "issue": "Requires auth, so the publicly reachable /demo/whatif page always fails with 401 for guests (see frontend issue). Either allow a demo snapshot path or gate the page."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "WhatIf.jsx / ScenarioCard", "issue": "After clicking 'Apply this plan' the pin succeeds server-side (200, memory written) but the UI never shows the 'Pinned to AI memory' badge and the button stays visible. RCA: applyPlan() does setPinnedId(data?.memory_id || opt.id) (line 58) while ScenarioCard receives pinned={pinnedId === opt.id} (line 134). memory_id is always returned by the backend (e.g. 'whatif_plan_laptop_1756...') so it never equals opt.id. Fix: setPinnedId(opt.id). Verified: whatif-pinned-best count = 0, whatif-apply-best still present after a successful POST.", "selector": "[data-testid=\"whatif-pinned-best\"]", "priority": "HIGH"},
+      {"component": "WhatIf.jsx (guest/demo mode)", "issue": "/demo/whatif is reachable without auth; running a simulation shows the raw backend string 'Not authenticated' in the error box. No sign-up CTA and no demo fallback. Reproduced with cleared localStorage: POST /api/whatif/scenario -> 401.", "selector": "[data-testid=\"whatif-error\"]", "priority": "MEDIUM"},
+      {"component": "WhatIf.jsx applyPlan", "issue": "catch block is empty (`catch (err) { /* silent */ }`) - if pinning fails the user gets zero feedback and the button just does nothing.", "selector": "[data-testid=\"whatif-apply-best\"]", "priority": "MEDIUM"},
+      {"component": "App.js Goals persistOrder", "issue": "`catch {}` swallows reorder failures. Local state shows the new order while the server keeps the old one, so the UI silently reverts on the next reload with no error surfaced.", "selector": "[data-testid^=\"move-up-\"]", "priority": "LOW"},
+      {"component": "App.js Goals card", "issue": "`g.priority.toLowerCase()` (lines 437, 447) will throw a TypeError and blank the whole Goals page for any legacy goal document without a `priority` field. Needs `(g.priority || 'Medium')`.", "selector": "[data-testid^=\"goal-card-\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "What-If Simulator", "issues": ["'Purchase date (optional)' uses the browser-native date input (mm/dd/yyyy) instead of the app's own calendar component - inconsistent with the rest of the product and shows a US date order for an INR/India-focused app."]},
+      {"screen": "Goals - delete confirmation modal", "issues": ["'Delete goal' primary action uses very light red text on a very light pink background (danger-btn); contrast is noticeably below the Cancel button and hard to read."]},
+      {"screen": "Goals page", "issues": ["Spec mentions 'drag handles' but no grip/handle icon is rendered; the whole card is draggable (draggable=true confirmed) with no affordance other than the helper sentence in the intro text."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration12.py",
+    "/app/test_reports/pytest/iteration12.xml",
+    "/app/test_reports/ui/whatif_results.jpg",
+    "/app/test_reports/ui/whatif_after_apply.jpg",
+    "/app/test_reports/ui/whatif_guest.jpg",
+    "/app/test_reports/ui/goals_delete_modal.jpg",
+    "/app/test_reports/ui/settings_notifications.jpg"
+  ],
+  "action_items": [
+    "HIGH: In /app/frontend/src/pages/WhatIf.jsx line 58 change setPinnedId(data?.memory_id || opt.id) to setPinnedId(opt.id) so the 'Pinned to AI memory' badge (data-testid=whatif-pinned-*) actually renders.",
+    "MEDIUM: Handle guest/demo mode on the What-If page - either hide/disable 'Run simulation' with a sign-up CTA when isDemo, or map the 401 to a friendly message instead of showing the raw 'Not authenticated' detail.",
+    "MEDIUM: Surface an error in applyPlan()'s catch block instead of failing silently.",
+    "LOW: Surface reorder failures from persistOrder() and re-sync from the server on failure.",
+    "LOW: Guard g.priority with a default in the Goals card so a goal without priority cannot crash the page.",
+    "LOW: Make PATCH /api/goals/{id} accept a partial payload (separate GoalPatchInput with all-optional fields).",
+    "DESIGN: Replace the native date input on What-If with the app's calendar component; raise contrast on the danger 'Delete goal' button; add a visible drag handle on goal cards."
+  ],
+  "critical_code_review_comments": [
+    "server.py _load_ordered_goals(): _clean() pops created_at before the sort key is computed, so the `str(g.get('created_at',''))` tiebreaker in _key() is always '' - dead code. Capture created_at before cleaning if the tiebreaker is intended.",
+    "features.py _compute_scenario_option(): `dips_into_savings` uses two completely different formulas depending on months_delay (`price > cash_available - savings` vs `remaining_cash < savings*0.5`), which makes the Buy Now vs delayed comparison inconsistent. Observed effect: Buy Now shows 'Uses savings reserve' while the 3-month option does not, even though both spend the same price.",
+    "features.py: the goal-impact 'drain' formula (`max(0, price - saved_before_purchase)` weighted by priority / len(goals)) can attribute a delay to goals whose monthly_contribution is unrelated to the purchase; verify the intent - a 100k laptop produced +2/+3/+3 months across 3 goals (8 months total) for a user with 275k savings.",
+    "App.js: usePreferences() is instantiated independently in FinancialPreferencesSection and NotificationsSection, causing two GET /settings/preferences calls and two divergent copies of prefs state. Lift it to a shared context/parent.",
+    "App.js is 1362 lines - Goals, Settings, Chat, Dashboard and 8 sub-sections should be split into separate files per the 700-line guideline."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration12.py"],
+  "success_rate": {"backend": "100% (40/40)", "frontend": "92% (Goals 12/12, Settings 14/14, What-If 6/7 - pin badge fails)"},
+  "seed_data_creation": "Created throwaway users TEST_iso_*@qa.finaura.dev and TEST_scen_*@qa.finaura.dev (registered via API, used for user-isolation and no-mutation checks). Test goals prefixed TEST_/QA_ were deleted by fixtures/UI teardown. One memory 'whatif_plan_test_laptop_*' was pinned to testuser@finaura.dev via the apply endpoint (intentional - proves memory-only write) plus one from the UI test; these can be removed from Settings > Account > AI memory.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "testuser@finaura.dev / testpass123 (from /app/memory/test_credentials.md) - works. NOTE: /app/auth_testing.md does not exist in this workspace, so the Emergent-google-auth playbook checks could not be run; Google OAuth was only verified at endpoint level (/api/auth/config google_enabled=true, /api/auth/google/start redirects, legacy /api/auth/google rejects bad tokens).",
+  "context_for_next_testing_agent": "Backend suite for this iteration lives at /app/backend/tests/test_iteration12.py (40 tests, all green) - run `pytest /app/backend/tests/test_iteration12.py`. Important: pytest.ini runs xdist in parallel, so never compare before/after snapshots of the SHARED testuser account across tests; use a freshly registered user (see the `scen_user`/`other` fixtures) for mutation-isolation assertions. Frontend nav testids are label-derived: nav-goals-and-priorities, nav-what-if-simulator, nav-settings-and-privacy. The only outstanding functional bug is the What-If pinned-badge (WhatIf.jsx line 58/134); after the fix, re-run the What-If UI flow and assert [data-testid=whatif-pinned-best] appears and whatif-apply-best disappears. Goals reorder persistence and all 6 Settings tabs were verified end-to-end including cross-reload persistence.",
+  "rca_of_the_issue": "What-If pin badge: POST /api/whatif/scenario/apply returns {pinned: true, memory_id: 'whatif_plan_<name>_<ts>'}. WhatIf.jsx stores that memory_id in `pinnedId`, but ScenarioCard is rendered with `pinned={pinnedId === opt.id}` where opt.id is one of buy_now|after_3m|after_6m|best. The two values can never match, so `pinned` stays false, the whatif-pinned-* badge never mounts and the 'Apply this plan' button never disappears - giving the user no confirmation despite a successful server write (verified: 0 failed API calls, memory count +1 in /api/settings/export). One-line fix: setPinnedId(opt.id)."
+}

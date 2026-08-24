@@ -1,125 +1,239 @@
-import { useEffect, useState } from 'react';
-import { LineChart, Line, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
+import { useState } from 'react';
 import { api } from '../lib/api';
-import { Sparkles, ArrowRight } from 'lucide-react';
+import { Sparkles, ArrowRight, Zap, Check, X, AlertTriangle, Star, TrendingDown, Wallet, Loader2 } from 'lucide-react';
 import '../auth.css';
+import '../whatif.css';
 
 const money = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
 
-export default function WhatIf({ data, isDemo }) {
-  const summary = data.summary;
-  const firstGoal = (data.goals || [])[0];
+const CATEGORY_OPTIONS = [
+  'Electronics', 'Vehicle', 'Home', 'Travel', 'Health', 'Education', 'Investment', 'Other'
+];
+
+export default function WhatIf({ isDemo }) {
   const [form, setForm] = useState({
-    current_monthly_savings: summary.savings || 10000,
-    monthly_savings_delta: 5000,
-    goal_target: firstGoal?.target_amount || 500000,
-    goal_current: firstGoal?.current_amount || 0,
-    expected_annual_return: 10,
-    years_horizon: 5,
+    item_name: '',
+    amount: 100000,
+    category: 'Electronics',
+    recurring_monthly_cost: 0,
+    purchase_date: '',
+    notes: '',
   });
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [goalId, setGoalId] = useState(firstGoal?.id || '');
-
-  useEffect(() => { if (firstGoal) { setGoalId(firstGoal.id); setForm((f) => ({ ...f, goal_target: firstGoal.target_amount, goal_current: firstGoal.current_amount })); } }, [firstGoal?.id]); // eslint-disable-line
-
-  const pickGoal = (id) => {
-    setGoalId(id);
-    const g = (data.goals || []).find((x) => x.id === id);
-    if (g) setForm((f) => ({ ...f, goal_target: g.target_amount, goal_current: g.current_amount }));
-  };
+  const [pinnedId, setPinnedId] = useState(null);
+  const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   const run = async () => {
-    setBusy(true); setError(''); setResult(null);
+    if (isDemo) {
+      setError('Sign up for a free account to run AI-powered scenarios on your own finances.');
+      return;
+    }
+    if (!form.item_name || !form.amount || Number(form.amount) <= 0) {
+      setError('Please enter an item and amount.'); return;
+    }
+    setBusy(true); setError(''); setResult(null); setPinnedId(null);
     try {
-      const { data: r } = await api.post('/whatif', { ...form,
-        current_monthly_savings: Number(form.current_monthly_savings),
-        monthly_savings_delta: Number(form.monthly_savings_delta),
-        goal_target: Number(form.goal_target),
-        goal_current: Number(form.goal_current),
-        expected_annual_return: Number(form.expected_annual_return),
-        years_horizon: Number(form.years_horizon),
-      });
-      setResult(r);
+      const payload = {
+        item_name: form.item_name.trim(),
+        amount: Number(form.amount),
+        category: form.category || null,
+        recurring_monthly_cost: Number(form.recurring_monthly_cost) || null,
+        purchase_date: form.purchase_date || null,
+        notes: form.notes ? form.notes.trim() : null,
+      };
+      const { data } = await api.post('/whatif/scenario', payload);
+      setResult(data);
     } catch (err) {
-      setError(err?.response?.data?.detail || 'Could not run simulation.');
+      const status = err?.response?.status;
+      if (status === 401) setError('Please sign in to run a personalised simulation.');
+      else setError(err?.response?.data?.detail || 'Could not run simulation. Please try again.');
     } finally { setBusy(false); }
   };
 
-  const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  const monthsToYears = (m) => m == null ? '—' : `${Math.floor(m/12)}y ${m%12}m`;
-  const delta = result && result.months_to_goal_current && result.months_to_goal_proposed
-    ? result.months_to_goal_current - result.months_to_goal_proposed : null;
+  const applyPlan = async (opt) => {
+    if (isDemo) return;
+    try {
+      await api.post('/whatif/scenario/apply', {
+        scenario_name: form.item_name,
+        amount: Number(form.amount),
+        option_label: opt.label,
+        summary: `${opt.label} — ${opt.pros?.[0] || ''} ${opt.cons?.[0] || ''} Goal delay ~${opt.total_goal_delay_months} months.`,
+      });
+      setPinnedId(opt.id);
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Could not pin this plan to memory. Please try again.');
+    }
+  };
 
   return (
     <div data-testid="whatif-page">
       <div className="page-intro">
-        <div><div className="eyebrow">Test your future money moves</div><h2>What-If Simulator</h2><p>Change one number, see how the whole plan shifts. Projections are educational estimates.</p></div>
-        <span className="ai-badge"><Sparkles size={14} /> Simulator</span>
+        <div>
+          <div className="eyebrow">Test your future money moves</div>
+          <h2>What-If Simulator</h2>
+          <p>Ask AI how a hypothetical purchase would affect your finances and goals — nothing is changed for real.</p>
+        </div>
+        <span className="ai-badge"><Sparkles size={14} /> Claude Sonnet 5</span>
       </div>
-      {error && <div className="auth-error">{error}</div>}
-      <div className="whatif-grid">
-        <section className="card">
-          <h3 style={{margin:'0 0 12px',font:'600 17px Outfit'}}>Your scenario</h3>
-          {(data.goals || []).length > 0 && (
+
+      <div className="wi-grid">
+        <div className="wi-card wi-input-card" data-testid="whatif-input-card">
+          <h3><Zap size={18} className="wi-icon-inline" /> Describe the scenario</h3>
+          <div className="auth-field">
+            <label>What do you want to buy?</label>
+            <input data-testid="whatif-item-input" value={form.item_name} onChange={(e) => upd('item_name', e.target.value)} placeholder="e.g. Laptop, iPhone, bike, home renovation" />
+          </div>
+          <div className="wi-two-col">
             <div className="auth-field">
-              <label>Which goal are we simulating?</label>
-              <select data-testid="whatif-goal-select" value={goalId} onChange={(e) => pickGoal(e.target.value)} style={{ width: '100%', padding: 11, borderRadius: 8, border: '1px solid #d9e4df', background: '#fbfdfc', fontSize: 13 }}>
-                {(data.goals || []).map((g) => <option key={g.id} value={g.id}>{g.name} — {money(g.target_amount)}</option>)}
+              <label>Amount (₹)</label>
+              <input data-testid="whatif-amount-input" type="number" min="1" value={form.amount} onChange={(e) => upd('amount', e.target.value)} />
+            </div>
+            <div className="auth-field">
+              <label>Category</label>
+              <select data-testid="whatif-category-input" value={form.category} onChange={(e) => upd('category', e.target.value)} className="wi-select">
+                {CATEGORY_OPTIONS.map((c) => <option key={c}>{c}</option>)}
               </select>
             </div>
-          )}
-          <NumRow label="Current monthly savings (₹)" tid="whatif-current-savings" value={form.current_monthly_savings} onChange={(v) => upd('current_monthly_savings', v)} />
-          <NumRow label="Change monthly savings by (₹)" tid="whatif-delta" value={form.monthly_savings_delta} onChange={(v) => upd('monthly_savings_delta', v)} hint="Positive = save more, negative = save less." />
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <NumRow label="Goal target (₹)" tid="whatif-target" value={form.goal_target} onChange={(v) => upd('goal_target', v)} />
-            <NumRow label="Already saved (₹)" tid="whatif-current" value={form.goal_current} onChange={(v) => upd('goal_current', v)} />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <NumRow label="Expected annual return (%)" tid="whatif-return" value={form.expected_annual_return} onChange={(v) => upd('expected_annual_return', v)} hint="Equity long-term ≈ 10-12%, debt ≈ 6-7%." />
-            <NumRow label="Horizon (years)" tid="whatif-horizon" value={form.years_horizon} onChange={(v) => upd('years_horizon', v)} />
+          <div className="wi-two-col">
+            <div className="auth-field">
+              <label>Recurring monthly cost (optional, ₹)</label>
+              <input data-testid="whatif-recurring-input" type="number" min="0" value={form.recurring_monthly_cost} onChange={(e) => upd('recurring_monthly_cost', e.target.value)} placeholder="e.g. subscription, EMI" />
+            </div>
+            <div className="auth-field">
+              <label>Purchase date (optional)</label>
+              <input data-testid="whatif-date-input" type="date" value={form.purchase_date} onChange={(e) => upd('purchase_date', e.target.value)} />
+            </div>
           </div>
-          <button data-testid="whatif-run-button" className="primary-btn full" onClick={run} disabled={busy || isDemo}>{busy ? 'Running…' : <>Run simulation <ArrowRight size={15}/></>}</button>
-          {isDemo && <p style={{ fontSize: 11, color: '#8b9995', textAlign:'center', marginTop: 8 }}>Sign up to run the simulator with your own numbers.</p>}
-        </section>
-        <section className="card">
-          <h3 style={{margin:'0 0 12px',font:'600 17px Outfit'}}>Projected outcome</h3>
-          {!result && <p style={{ color: '#8b9995', fontSize: 13, textAlign: 'center', padding: 30 }}>Run a simulation to see the impact.</p>}
-          {result && (
-            <>
-              <div className="whatif-stats">
-                <div><small>Current plan</small><strong data-testid="whatif-current-months">{monthsToYears(result.months_to_goal_current)}</strong><span>to goal</span></div>
-                <div className="highlight"><small>New plan</small><strong data-testid="whatif-proposed-months">{monthsToYears(result.months_to_goal_proposed)}</strong><span>to goal</span></div>
-                <div><small>Difference</small><strong data-testid="whatif-delta-months" style={{ color: delta > 0 ? '#087f56' : delta < 0 ? '#a83932' : '#556b60' }}>
-                  {delta == null ? '—' : (delta > 0 ? `${delta} mo faster` : delta < 0 ? `${Math.abs(delta)} mo slower` : 'no change')}
-                </strong><span>impact</span></div>
-              </div>
-              <ResponsiveContainer width="100%" height={230}>
-                <LineChart data={result.series}>
-                  <CartesianGrid stroke="#edf1ef" vertical={false} />
-                  <XAxis dataKey="month" tickFormatter={(v) => `${Math.round(v/12)}y`} tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false}/>
-                  <YAxis tickFormatter={(v) => `₹${Math.round(v/1000)}k`} tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false}/>
-                  <Tooltip formatter={(v) => money(v)} labelFormatter={(m) => `Month ${m}`} contentStyle={{ border: '1px solid #e2e8f0', borderRadius: 8 }} />
-                  <Legend />
-                  <Line type="monotone" dataKey="current" stroke="#94a3b8" strokeWidth={2} dot={false} name="Current" />
-                  <Line type="monotone" dataKey="proposed" stroke="#10b981" strokeWidth={2.5} dot={false} name="Proposed" />
-                </LineChart>
-              </ResponsiveContainer>
-              <p style={{ fontSize: 11, color: '#8b9995', marginTop: 10, lineHeight: 1.5 }}>{result.disclaimer}</p>
-            </>
-          )}
-        </section>
+          <div className="auth-field">
+            <label>Notes / assumptions (optional)</label>
+            <input data-testid="whatif-notes-input" value={form.notes} onChange={(e) => upd('notes', e.target.value)} placeholder="Any context for the AI" />
+          </div>
+          {error && <div className="auth-error" data-testid="whatif-error">{error}</div>}
+          <button data-testid="whatif-run-button" className="primary-btn full" onClick={run} disabled={busy}>
+            {busy ? (<><Loader2 size={16} className="wi-spin" /> Analyzing with AI…</>) : (<>Run simulation <ArrowRight size={16} /></>)}
+          </button>
+          <p className="wi-hint">Nothing here modifies your real goals, transactions, or balances.</p>
+        </div>
+
+        {result && (
+          <div className="wi-card wi-summary-card" data-testid="whatif-summary-card">
+            <h3>Your current snapshot</h3>
+            <div className="wi-metric"><span>Monthly free cash</span><b>{money(result.user_snapshot.monthly_free_cash)}</b></div>
+            <div className="wi-metric"><span>Current savings</span><b>{money(result.user_snapshot.current_savings)}</b></div>
+            <div className="wi-metric"><span>Active goals</span><b>{result.user_snapshot.goal_count}</b></div>
+            <div className="wi-metric"><span>Monthly expenses</span><b>{money(result.user_snapshot.monthly_expenses)}</b></div>
+            {result.ai_available === false && (
+              <div className="wi-warn"><AlertTriangle size={14} /> AI is temporarily unavailable — a rule-based recommendation is shown.</div>
+            )}
+          </div>
+        )}
       </div>
+
+      {result && (
+        <div className="wi-options-grid" data-testid="whatif-options-grid">
+          {result.options.map((opt) => (
+            <ScenarioCard
+              key={opt.id}
+              opt={opt}
+              isBest={opt.id === 'best'}
+              pinned={pinnedId === opt.id}
+              onApply={() => applyPlan(opt)}
+              isDemo={isDemo}
+            />
+          ))}
+        </div>
+      )}
+
+      {result && (<p className="wi-disclaimer">{result.disclaimer}</p>)}
     </div>
   );
 }
-function NumRow({ label, tid, value, onChange, hint }) {
+
+function ScenarioCard({ opt, isBest, pinned, onApply, isDemo }) {
   return (
-    <div className="auth-field">
-      <label>{label}</label>
-      <input data-testid={tid} type="number" value={value} onChange={(e) => onChange(e.target.value)}/>
-      {hint && <div className="hint">{hint}</div>}
+    <div className={`wi-option ${isBest ? 'wi-best' : ''}`} data-testid={`whatif-option-${opt.id}`}>
+      <div className="wi-option-head">
+        {isBest && <span className="wi-best-badge"><Star size={12} /> AI recommendation</span>}
+        <h3>{opt.label}</h3>
+        {opt.months_delay > 0 && !isBest && <span className="wi-delay">Wait {opt.months_delay} months</span>}
+      </div>
+
+      {isBest && opt.ai_recommendation && (
+        <p className="wi-ai-reco" data-testid="whatif-ai-reco">{opt.ai_recommendation}</p>
+      )}
+
+      <div className="wi-stats">
+        <Stat label="Cash after purchase" value={money(opt.remaining_cash_after_purchase)} bad={opt.remaining_cash_after_purchase < 0} />
+        <Stat label="Goals delay" value={`~${opt.total_goal_delay_months} mo`} icon={<TrendingDown size={13} />} bad={opt.total_goal_delay_months > 6} />
+        <Stat label="Health impact" value={`${opt.health_score_delta >= 0 ? '+' : ''}${opt.health_score_delta}`} good={opt.health_score_delta > 0} bad={opt.health_score_delta < 0} />
+        {opt.recurring_monthly_cost > 0 && (
+          <Stat label="Recurring (yr)" value={money(opt.total_recurring_first_year)} bad />
+        )}
+      </div>
+
+      {opt.dips_into_savings && (
+        <div className="wi-warn small"><AlertTriangle size={12} /> Uses savings reserve</div>
+      )}
+
+      {opt.goal_impacts?.length > 0 && (
+        <div className="wi-goals">
+          <div className="wi-goals-title"><Wallet size={13} /> Affected goals</div>
+          <ul>
+            {opt.goal_impacts.slice(0, 3).map((g) => (
+              <li key={g.goal_id}>
+                <span>{g.goal_name}</span>
+                <span className={`priority ${(g.priority || 'medium').toLowerCase()}`}>+{g.months_delay}mo</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="wi-proscons">
+        <div className="wi-pros">
+          <div className="wi-pc-title"><Check size={12} /> Pros</div>
+          {(opt.pros || []).map((p, i) => <div key={i} className="wi-pc">{p}</div>)}
+        </div>
+        <div className="wi-cons">
+          <div className="wi-pc-title"><X size={12} /> Cons</div>
+          {(opt.cons || []).map((c, i) => <div key={i} className="wi-pc">{c}</div>)}
+        </div>
+      </div>
+
+      {opt.ai_note && !isBest && (
+        <div className="wi-ai-note"><Sparkles size={12} /> {opt.ai_note}</div>
+      )}
+
+      {isBest && opt.ai_reasoning && (
+        <div className="wi-ai-reasoning"><Sparkles size={12} /> {opt.ai_reasoning}</div>
+      )}
+
+      {!isDemo && !pinned && (
+        <button
+          className={isBest ? 'primary-btn full' : 'pill-btn full mint'}
+          data-testid={`whatif-apply-${opt.id}`}
+          onClick={onApply}
+        >
+          Apply this plan
+        </button>
+      )}
+      {pinned && (
+        <div className="wi-pinned" data-testid={`whatif-pinned-${opt.id}`}>
+          <Check size={14} /> Pinned to AI memory
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, good, bad, icon }) {
+  return (
+    <div className={`wi-stat ${good ? 'good' : ''} ${bad ? 'bad' : ''}`}>
+      <span className="wi-stat-l">{label}</span>
+      <span className="wi-stat-v">{icon}{value}</span>
     </div>
   );
 }

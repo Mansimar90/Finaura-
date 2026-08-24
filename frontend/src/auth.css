@@ -327,3 +327,45 @@
 :root[data-theme="dark"] .expense-tag{background:#1e293b;color:#cbd5e1}
 :root[data-theme="dark"] .rate-chip{background:#064e3b;color:#a7f3d0}
 :root[data-theme="dark"] .memory-cat{background:#064e3b;color:#a7f3d0}
+
+/* --- Goals: drag & drop, reorder, action buttons --- */
+.goal-card[draggable="true"]{cursor:grab}
+.goal-card[draggable="true"]:active{cursor:grabbing}
+.goal-card.dragging{opacity:.5;transform:scale(.98);border-style:dashed}
+.goal-actions{display:flex;gap:5px;margin-left:auto;align-items:center}
+.goal-actions .icon-btn{width:26px;height:26px;border-radius:6px;background:#fff;border:1px solid #dbe6df;font:600 12px 'Plus Jakarta Sans';color:#556b60;cursor:pointer;transition:background .15s,color .15s}
+.goal-actions .icon-btn:hover:not(:disabled){background:#eaf5ef;color:#087f56;border-color:#87dcbb}
+.goal-actions .icon-btn:disabled{opacity:.4;cursor:not-allowed}
+[data-theme="dark"] .goal-actions .icon-btn{background:#0f1f1a;border-color:#1f3830;color:#94a3b8}
+[data-theme="dark"] .goal-actions .icon-btn:hover:not(:disabled){background:#0e3325;color:#5ee2b3}
+
+/* --- Settings tabs + preferences + notifications --- */
+.settings-tabs{display:flex;gap:6px;overflow-x:auto;border-bottom:1px solid var(--line,#e2ecdf);margin:0 0 20px;padding-bottom:0}
+.settings-tab{background:none;border:0;padding:12px 16px;font:600 12px 'Plus Jakarta Sans';color:#8b9995;cursor:pointer;border-bottom:2px solid transparent;transition:color .18s,border-color .18s;white-space:nowrap}
+.settings-tab:hover{color:#0f172a}
+.settings-tab.active{color:#087f56;border-bottom-color:#087f56}
+[data-theme="dark"] .settings-tab{color:#94a3b8}
+[data-theme="dark"] .settings-tab:hover{color:#e2ecdf}
+[data-theme="dark"] .settings-tab.active{color:#5ee2b3;border-bottom-color:#5ee2b3}
+.pref-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 20px}
+@media (max-width:640px){.pref-grid{grid-template-columns:1fr}}
+.pref-row{display:flex;flex-direction:column;gap:6px}
+.pref-row label{font-size:11px;font-weight:600;color:#4b5b56;letter-spacing:.02em}
+.pref-select,.pref-input{width:100%;padding:11px 12px;border-radius:8px;border:1px solid #d9e4df;background:#fbfdfc;font:13px 'Plus Jakarta Sans';color:var(--ink,#0f172a)}
+.pref-select:focus,.pref-input:focus{outline:none;border-color:#87dcbb;background:#fff}
+[data-theme="dark"] .pref-select,[data-theme="dark"] .pref-input{background:#0f1f1a;border-color:#1f3830;color:#e2ecdf}
+.pref-save-hint{margin-top:14px;font-size:11px;color:#087f56}
+.notif-list{display:flex;flex-direction:column;gap:2px}
+.notif-row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid #f0f3f1}
+.notif-row:last-child{border-bottom:0}
+.notif-row strong{display:block;font-size:13px;font-weight:600;color:var(--ink,#0f172a)}
+.notif-row p{font-size:11px;color:#8b9995;margin:3px 0 0;line-height:1.5}
+[data-theme="dark"] .notif-row{border-color:#1f3830}
+[data-theme="dark"] .notif-row strong{color:#e2ecdf}
+[data-theme="dark"] .notif-row p{color:#94a3b8}
+.toggle{position:relative;width:36px;height:20px;border-radius:12px;background:#dbe6df;transition:background .2s;flex-shrink:0;cursor:pointer;border:0;padding:0}
+.toggle i{position:absolute;top:2px;left:2px;width:16px;height:16px;background:#fff;border-radius:50%;transition:transform .2s;display:block;box-shadow:0 1px 3px rgba(0,0,0,.15)}
+.toggle.on{background:#087f56}
+.toggle.on i{transform:translateX(16px)}
+[data-theme="dark"] .toggle{background:#1f3830}
+[data-theme="dark"] .toggle.on{background:#5ee2b3}
