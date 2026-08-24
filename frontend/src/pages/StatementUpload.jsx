@@ -3,18 +3,25 @@ import { Upload, Check, ChevronRight, ArrowRight, FileText, X } from 'lucide-rea
 import { api } from '../lib/api';
 import '../auth.css';
 
-const MAPPING_FIELDS = [
+const BASE_MAPPING_FIELDS = [
   { key: 'date', label: 'Transaction date' },
   { key: 'description', label: 'Description / narration' },
   { key: 'amount', label: 'Signed amount (single column)' },
   { key: 'debit', label: 'Debit / withdrawal column' },
   { key: 'credit', label: 'Credit / deposit column' },
-  { key: 'type', label: 'Type (CR / DR)' },
+  { key: 'type', label: 'Type (CR / DR / Sent / Received)' },
+];
+
+const UPI_EXTRA_FIELDS = [
+  { key: 'merchant', label: 'Merchant / To / Recipient' },
+  { key: 'upi_id', label: 'UPI ID / VPA' },
+  { key: 'upi_ref', label: 'UPI Ref / UTR' },
+  { key: 'txn_id', label: 'Transaction ID' },
 ];
 
 const money = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
 
-export default function StatementUpload({ onImported }) {
+export default function StatementUpload({ onImported, source = 'bank' }) {
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
   const [mapping, setMapping] = useState({});
@@ -35,6 +42,7 @@ export default function StatementUpload({ onImported }) {
     try {
       const form = new FormData();
       form.append('file', f);
+      form.append('source', source);
       const { data } = await api.post('/statements/preview', form);
       setPreview(data);
       if (data.kind === 'csv' || data.kind === 'excel') {
@@ -56,6 +64,7 @@ export default function StatementUpload({ onImported }) {
       const form = new FormData();
       form.append('file', file);
       form.append('mapping', JSON.stringify(mapping));
+      form.append('source', source);
       const { data } = await api.post('/statements/parse', form);
       setParsed(data.transactions || []);
       setStep('review');
@@ -68,7 +77,7 @@ export default function StatementUpload({ onImported }) {
     if (!parsed.length) return;
     setBusy(true); setError('');
     try {
-      const { data } = await api.post('/statements/confirm-import', { transactions: parsed });
+      const { data } = await api.post('/statements/confirm-import', { transactions: parsed, source });
       setImported(data.imported);
       setStep('done');
       onImported?.(data.imported);
@@ -80,15 +89,19 @@ export default function StatementUpload({ onImported }) {
   const updateTxn = (idx, patch) => setParsed((prev) => prev.map((t, i) => (i === idx ? { ...t, ...patch } : t)));
   const removeTxn = (idx) => setParsed((prev) => prev.filter((_, i) => i !== idx));
 
+  const MAPPING_FIELDS = source === 'upi' ? [...BASE_MAPPING_FIELDS, ...UPI_EXTRA_FIELDS] : BASE_MAPPING_FIELDS;
   return (
     <div className="statement-upload" data-testid="statement-upload">
       {error && <div className="auth-error" data-testid="upload-error">{error}</div>}
       {step === 'choose' && (
         <div className="upload-dropzone">
           <div className="upload-icon"><Upload size={22} /></div>
-          <h3>Upload your bank statement</h3>
-          <p>CSV, Excel (.xlsx) or PDF · up to 10 MB. Nothing is stored until you confirm.</p>
-          <input data-testid="statement-file-input" type="file" accept=".csv,.xlsx,.xls,.pdf,application/pdf,text/csv" onChange={(e) => handleFile(e.target.files?.[0])} />
+          <h3>{source === 'upi' ? 'Upload your UPI statement' : 'Upload your bank statement'}</h3>
+          <p>{source === 'upi'
+            ? 'CSV, Excel or PDF exported from Google Pay, PhonePe, Paytm, etc. Up to 10 MB.'
+            : 'CSV, Excel (.xlsx) or PDF · up to 10 MB. Nothing is stored until you confirm.'}
+          </p>
+          <input data-testid={`statement-file-input-${source}`} type="file" accept=".csv,.xlsx,.xls,.pdf,application/pdf,text/csv" onChange={(e) => handleFile(e.target.files?.[0])} />
           {busy && <p style={{ fontSize: 12, color: '#8b9995', marginTop: 12 }}>Reading your file…</p>}
         </div>
       )}

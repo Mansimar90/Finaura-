@@ -19,6 +19,7 @@ import PinLock from './pages/PinLock';
 import StatementUpload from './pages/StatementUpload';
 import Profile from './pages/Profile';
 import WhatIf from './pages/WhatIf';
+import DigitalTwin from './pages/DigitalTwin';
 import ArticleDetail from './pages/ArticleDetail';
 import GoogleCallback from './pages/GoogleCallback';
 
@@ -29,6 +30,7 @@ const nav = [
   {label:'Six-Month Analysis',path:'/analysis',icon:TrendingUp},
   {label:'Goals & Priorities',path:'/goals',icon:Target},
   {label:'What-If Simulator',path:'/whatif',icon:Zap},
+  {label:'Digital Twin',path:'/twin',icon:User},
   {label:'Financial Changes',path:'/changes',icon:Activity},
   {label:'FINAURA Learn',path:'/learn',icon:BookOpen},
   {label:'Ask FINAURA AI',path:'/ask',icon:Sparkles},
@@ -267,6 +269,9 @@ function Finances({ data }) {
 function Statements({ data, isDemo, reload }) {
   const [uploaded, setUploaded] = useState(false);
   const [txns, setTxns] = useState(data.transactions);
+  const [source, setSource] = useState('bank'); // 'bank' | 'upi' | 'verify'
+  const [verifyData, setVerifyData] = useState(null);
+  const [verifyBusy, setVerifyBusy] = useState(false);
   const navigate = useNavigate();
   useEffect(() => setTxns(data.transactions), [data.transactions]);
   const update = async (id, category) => {
@@ -278,44 +283,225 @@ function Statements({ data, isDemo, reload }) {
     if (isDemo) { setUploaded(true); return; }
     try { await api.post('/statements/import-demo'); setUploaded(true); await reload?.(); } catch {}
   };
+  const loadVerify = async () => {
+    if (isDemo) return;
+    setVerifyBusy(true);
+    try {
+      const { data: v } = await api.get('/statements/verify');
+      setVerifyData(v);
+    } catch { /* silent */ } finally { setVerifyBusy(false); }
+  };
+  useEffect(() => { if (source === 'verify' && !isDemo) loadVerify(); }, [source, isDemo]); // eslint-disable-line
+  const resolveDuplicate = async (keepId, dropId) => {
+    try {
+      await api.post('/statements/resolve-duplicate', { keep_id: keepId, drop_id: dropId });
+      await loadVerify();
+      await reload?.();
+    } catch { /* silent */ }
+  };
+
+  const filteredTxns = source === 'verify' ? txns : (source === 'upi' ? txns.filter((t) => t.source === 'upi') : txns.filter((t) => (t.source || 'bank') === 'bank'));
+
   return (
     <>
       <div className="page-intro">
-        <div><div className="eyebrow">Enter · Understand · Organize</div><h2>Statements</h2><p>No bank account connection required. Bring your history, your way.</p></div>
+        <div><div className="eyebrow">Enter · Understand · Organize</div><h2>Statements</h2><p>Add bank + UPI. Finaura reconciles them so nothing is double-counted.</p></div>
         <button data-testid="demo-shortcut-button" className="outline-btn" onClick={importDemo}><Plus size={17} /> {isDemo ? 'View demo' : 'Load six-month demo'}</button>
       </div>
       {uploaded && <div className="success-banner" data-testid="statement-upload-success"><Check size={18} /> Demo statement imported — review the categorization before confirming.</div>}
-      {!isDemo && (
+
+      <div className="settings-tabs" data-testid="statements-tabs">
+        <button data-testid="stmt-tab-bank" className={`settings-tab ${source === 'bank' ? 'active' : ''}`} onClick={() => setSource('bank')}>Bank statement</button>
+        <button data-testid="stmt-tab-upi" className={`settings-tab ${source === 'upi' ? 'active' : ''}`} onClick={() => setSource('upi')}>UPI statement</button>
+        <button data-testid="stmt-tab-verify" className={`settings-tab ${source === 'verify' ? 'active' : ''}`} onClick={() => setSource('verify')}>Cross-verification</button>
+      </div>
+
+      {source !== 'verify' && !isDemo && (
         <Card className="statement-upload-card">
-          <SectionTitle eyebrow="Import your own data" title="Upload a bank statement" />
-          <StatementUpload onImported={() => reload?.()} />
+          <SectionTitle
+            eyebrow={source === 'upi' ? 'Google Pay, PhonePe, Paytm, BHIM' : 'Import your own data'}
+            title={source === 'upi' ? 'Upload a UPI statement' : 'Upload a bank statement'}
+          />
+          <StatementUpload key={source} source={source} onImported={() => reload?.()} />
         </Card>
       )}
-      <Card>
-        <SectionTitle eyebrow={`${txns.length} transactions`} title="Review your imported data" action={<span className="review-pill"><span></span> Needs your review</span>} />
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>Date</th><th>Description</th><th>Type</th><th>Category</th><th>Amount</th></tr></thead>
-            <tbody>
-              {txns.length === 0 && <tr><td colSpan={5} style={{ textAlign: 'center', color: '#8b9995', padding: '30px 0' }}>No transactions yet. Upload a statement or load the demo above to get started.</td></tr>}
-              {txns.map((t) => (
-                <tr key={t.id}>
-                  <td>{t.date}</td>
-                  <td><strong>{t.description}</strong></td>
-                  <td><span className={t.type === 'Income' ? 'income-tag' : 'expense-tag'}>{t.type}</span></td>
-                  <td>
-                    <select data-testid={`transaction-category-${t.id}`} value={t.category} onChange={(e) => update(t.id, e.target.value)} disabled={isDemo}>
-                      {['Income', 'Food', 'Shopping', 'Transport', 'Rent', 'Bills', 'Education', 'Entertainment', 'Healthcare', 'Other'].map((c) => <option key={c}>{c}</option>)}
-                    </select>
-                  </td>
-                  <td className={t.type === 'Income' ? 'amount-income' : ''}>{t.type === 'Income' ? '+' : '−'}{money(t.amount)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+
+      {source === 'verify' && (
+        <VerificationView data={verifyData} busy={verifyBusy} onResolve={resolveDuplicate} onReload={loadVerify} isDemo={isDemo} />
+      )}
+
+      {source !== 'verify' && (
+        <Card>
+          <SectionTitle
+            eyebrow={`${filteredTxns.length} ${source === 'upi' ? 'UPI' : 'bank'} transactions`}
+            title={`Review your ${source === 'upi' ? 'UPI' : 'imported'} data`}
+            action={<span className="review-pill"><span></span> Needs your review</span>}
+          />
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Date</th><th>Description</th>{source === 'upi' && <th>Merchant / Ref</th>}<th>Type</th><th>Category</th><th>Amount</th></tr></thead>
+              <tbody>
+                {filteredTxns.length === 0 && <tr><td colSpan={source === 'upi' ? 6 : 5} style={{ textAlign: 'center', color: '#8b9995', padding: '30px 0' }}>No {source === 'upi' ? 'UPI' : 'bank'} transactions yet. Upload a statement above to get started.</td></tr>}
+                {filteredTxns.map((t) => (
+                  <tr key={t.id}>
+                    <td>{t.date}</td>
+                    <td><strong>{t.description}</strong></td>
+                    {source === 'upi' && <td><div style={{ fontSize: 12 }}>{t.merchant || '—'}{t.upi_ref && <><br /><small style={{ color: '#8b9995' }}>Ref {t.upi_ref}</small></>}</div></td>}
+                    <td><span className={t.type === 'Income' ? 'income-tag' : 'expense-tag'}>{t.type}</span></td>
+                    <td>
+                      <select data-testid={`transaction-category-${t.id}`} value={t.category} onChange={(e) => update(t.id, e.target.value)} disabled={isDemo}>
+                        {['Income', 'Food', 'Shopping', 'Transport', 'Rent', 'Bills', 'Education', 'Entertainment', 'Healthcare', 'Other'].map((c) => <option key={c}>{c}</option>)}
+                      </select>
+                    </td>
+                    <td className={t.type === 'Income' ? 'amount-income' : ''}>{t.type === 'Income' ? '+' : '−'}{money(t.amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
     </>
+  );
+}
+
+function VerificationView({ data, busy, onResolve, onReload, isDemo }) {
+  if (isDemo) {
+    return (
+      <Card><p style={{ padding: '30px 0', textAlign: 'center', color: '#8b9995' }}>
+        Sign up to cross-verify your bank + UPI statements.
+      </p></Card>
+    );
+  }
+  if (busy && !data) {
+    return <Card><p style={{ padding: '30px 0', textAlign: 'center', color: '#8b9995' }}>Reconciling…</p></Card>;
+  }
+  if (!data) return null;
+  const { counts, verified_matches = [], possible_matches = [], upi_only = [], bank_only = [], months = [] } = data;
+  const money2 = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
+  return (
+    <div data-testid="verification-view">
+      <div className="verify-status-grid">
+        <StatusCard label="Bank transactions" value={counts.bank_total} testid="verify-bank-total" />
+        <StatusCard label="UPI transactions" value={counts.upi_total} testid="verify-upi-total" />
+        <StatusCard label="Verified matches" value={counts.verified} tone="good" testid="verify-matched" />
+        <StatusCard label="Possible matches" value={counts.possible} tone="warn" testid="verify-possible" />
+        <StatusCard label="UPI only" value={counts.upi_only} testid="verify-upi-only" />
+        <StatusCard label="Bank only" value={counts.bank_only} testid="verify-bank-only" />
+      </div>
+
+      {months.length > 0 && (
+        <Card style={{ marginTop: 14 }}>
+          <SectionTitle eyebrow="Monthly coverage" title="Which months have both statements?" />
+          <div className="verify-months">
+            {months.map((m) => {
+              const both = m.bank_count > 0 && m.upi_count > 0;
+              return (
+                <div key={m.month} className={`verify-month ${both ? 'both' : 'partial'}`} data-testid={`verify-month-${m.month.replace(' ', '-')}`}>
+                  <strong>{m.month}</strong>
+                  <div className="verify-month-pills">
+                    <span className={m.bank_count > 0 ? 'yes' : 'no'}>Bank {m.bank_count > 0 ? '✓' : '—'} ({m.bank_count})</span>
+                    <span className={m.upi_count > 0 ? 'yes' : 'no'}>UPI {m.upi_count > 0 ? '✓' : '—'} ({m.upi_count})</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      {verified_matches.length > 0 && (
+        <Card style={{ marginTop: 14 }} data-testid="verified-matches-card">
+          <SectionTitle eyebrow={`${verified_matches.length} confirmed`} title="Verified matches — one payment, two statements" />
+          <p style={{ fontSize: 12, color: '#556b60', margin: '0 0 14px' }}>These transactions appear in both your bank and UPI statements. Keep the UPI copy (richer merchant) and drop the bank duplicate to avoid double-counting.</p>
+          <MatchList matches={verified_matches} onResolve={onResolve} kind="verified" />
+        </Card>
+      )}
+
+      {possible_matches.length > 0 && (
+        <Card style={{ marginTop: 14 }} data-testid="possible-matches-card">
+          <SectionTitle eyebrow={`${possible_matches.length} needs review`} title="Possible matches — please confirm" />
+          <MatchList matches={possible_matches} onResolve={onResolve} kind="possible" />
+        </Card>
+      )}
+
+      <div className="verify-only-grid" style={{ marginTop: 14 }}>
+        <Card data-testid="upi-only-card">
+          <SectionTitle eyebrow={`${upi_only.length} entries`} title="UPI only" />
+          <p style={{ fontSize: 12, color: '#556b60', margin: '0 0 10px' }}>These UPI transactions have no matching bank row yet — often small P2P payments not on the bank statement.</p>
+          <MiniList items={upi_only.slice(0, 20)} money={money2} />
+        </Card>
+        <Card data-testid="bank-only-card">
+          <SectionTitle eyebrow={`${bank_only.length} entries`} title="Bank only" />
+          <p style={{ fontSize: 12, color: '#556b60', margin: '0 0 10px' }}>Bank entries we couldn't match to a UPI transaction — e.g. cards, cheques, salary.</p>
+          <MiniList items={bank_only.slice(0, 20)} money={money2} />
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function StatusCard({ label, value, tone, testid }) {
+  return (
+    <div className={`verify-status ${tone || ''}`} data-testid={testid}>
+      <span>{label}</span>
+      <b>{value}</b>
+    </div>
+  );
+}
+
+function MatchList({ matches, onResolve, kind }) {
+  return (
+    <div className="match-list">
+      {matches.map((m, i) => (
+        <div className={`match-row ${kind}`} key={i} data-testid={`match-row-${kind}-${i}`}>
+          <div className="match-side">
+            <div className="match-side-label">Bank</div>
+            <strong>{m.bank_txn.description}</strong>
+            <small>{m.bank_txn.date} · ₹{Number(m.bank_txn.amount).toLocaleString('en-IN')}</small>
+          </div>
+          <div className="match-arrow">
+            <span className={`match-badge ${kind}`}>{kind === 'verified' ? `✓ Match ${Math.round(m.score * 100)}%` : `? ${Math.round(m.score * 100)}%`}</span>
+            <small>{m.reason}</small>
+          </div>
+          <div className="match-side">
+            <div className="match-side-label">UPI</div>
+            <strong>{m.upi_txn.merchant || m.upi_txn.description}</strong>
+            <small>{m.upi_txn.date} · ₹{Number(m.upi_txn.amount).toLocaleString('en-IN')}</small>
+          </div>
+          <div className="match-actions">
+            <button
+              className="pill-btn mint"
+              data-testid={`match-keep-upi-${i}`}
+              onClick={() => onResolve(m.upi_txn.id, m.bank_txn.id)}
+              title="Keep the UPI row (richer merchant), drop the bank duplicate"
+            >Keep UPI</button>
+            <button
+              className="pill-btn"
+              data-testid={`match-keep-bank-${i}`}
+              onClick={() => onResolve(m.bank_txn.id, m.upi_txn.id)}
+            >Keep bank</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MiniList({ items, money }) {
+  if (items.length === 0) return <p style={{ fontSize: 12, color: '#8b9995' }}>Nothing here.</p>;
+  return (
+    <div className="mini-list">
+      {items.map((t) => (
+        <div className="mini-item" key={t.id}>
+          <div>
+            <strong>{t.merchant || t.description}</strong>
+            <small>{t.date}</small>
+          </div>
+          <span className={t.type === 'Income' ? 'amount-income' : ''}>{t.type === 'Income' ? '+' : '−'}{money(t.amount)}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -440,6 +626,13 @@ function Goals({ data, isDemo, reload }) {
         {goals.map((g, idx) => {
           const prio = (g.priority || 'Medium');
           const prioLower = prio.toLowerCase();
+          const changePriority = async (newPrio) => {
+            if (isDemo || newPrio === prio) return;
+            try {
+              await api.patch(`/goals/${g.id}`, { priority: newPrio });
+              await reload?.();
+            } catch (_) { setError("We couldn't update the priority. Please try again."); }
+          };
           return (
           <Card
             className={`goal-card ${prioLower} ${dragId === g.id ? 'dragging' : ''}`}
@@ -453,20 +646,42 @@ function Goals({ data, isDemo, reload }) {
             <div className="goal-card-top">
               <span className="goal-emoji large">{g.emoji || '✦'}</span>
               <span className={`priority ${prioLower}`}>{prio} priority</span>
-              {!isDemo && (
-                <div className="goal-actions">
-                  <button className="icon-btn" data-testid={`move-up-${g.id}`} onClick={() => moveTo(idx, idx - 1)} disabled={idx === 0} title="Move up">↑</button>
-                  <button className="icon-btn" data-testid={`move-down-${g.id}`} onClick={() => moveTo(idx, idx + 1)} disabled={idx === goals.length - 1} title="Move down">↓</button>
-                  <button className="icon-btn" data-testid={`edit-goal-${g.id}`} onClick={() => openEdit(g)} title="Edit"><Edit3 size={14}/></button>
-                  <button className="icon-btn" data-testid={`delete-goal-${g.id}`} onClick={() => askDelete(g)} title="Delete"><Trash2 size={14}/></button>
-                </div>
-              )}
             </div>
             <h3 data-testid={`goal-card-name-${g.id}`}>{g.name}</h3>
             <div className="goal-big-amount" data-testid={`goal-card-amount-${g.id}`}>{money(g.current_amount)} <small>/ {money(g.target_amount)}</small></div>
             <div className="goal-progress thick"><span style={{ width: `${pct(g.current_amount, g.target_amount)}%` }}></span></div>
             <div className="goal-meta"><span>{pct(g.current_amount, g.target_amount)}% complete</span><span>Due {g.deadline}</span></div>
             <div className="goal-requirement"><span>Monthly contribution</span><b>{money(g.monthly_contribution)} / mo</b></div>
+            {!isDemo && (
+              <>
+                <div className="goal-priority-row">
+                  <span className="goal-priority-label">Priority:</span>
+                  {['High', 'Medium', 'Low'].map((p) => (
+                    <button
+                      key={p}
+                      data-testid={`priority-${p.toLowerCase()}-${g.id}`}
+                      className={`priority-chip ${p.toLowerCase()} ${prio === p ? 'active' : ''}`}
+                      onClick={() => changePriority(p)}
+                      title={`Set priority to ${p}`}
+                    >{p}</button>
+                  ))}
+                </div>
+                <div className="goal-action-bar">
+                  <button className="goal-action-btn" data-testid={`move-up-${g.id}`} onClick={() => moveTo(idx, idx - 1)} disabled={idx === 0} title="Move up">
+                    <span aria-hidden="true">↑</span> Up
+                  </button>
+                  <button className="goal-action-btn" data-testid={`move-down-${g.id}`} onClick={() => moveTo(idx, idx + 1)} disabled={idx === goals.length - 1} title="Move down">
+                    <span aria-hidden="true">↓</span> Down
+                  </button>
+                  <button className="goal-action-btn edit" data-testid={`edit-goal-${g.id}`} onClick={() => openEdit(g)}>
+                    <Edit3 size={13}/> Edit
+                  </button>
+                  <button className="goal-action-btn danger" data-testid={`delete-goal-${g.id}`} onClick={() => askDelete(g)}>
+                    <Trash2 size={13}/> Delete
+                  </button>
+                </div>
+              </>
+            )}
           </Card>
           );
         })}
@@ -1295,6 +1510,7 @@ function AppWorkspace({ mode }) {
     '/analysis': <Analysis data={data} />,
     '/goals': <Goals data={data} isDemo={isDemo} reload={reload} />,
     '/whatif': <WhatIf isDemo={isDemo} />,
+    '/twin': <DigitalTwin isDemo={isDemo} />,
     '/changes': <Changes data={data} />,
     '/learn': <Learn isDemo={isDemo} />,
     '/ask': <Ask isDemo={isDemo} userName={data.user?.name} />,

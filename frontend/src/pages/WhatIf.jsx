@@ -11,6 +11,7 @@ const CATEGORY_OPTIONS = [
 ];
 
 export default function WhatIf({ isDemo }) {
+  const [mode, setMode] = useState('purchase'); // 'purchase' | 'subscription'
   const [form, setForm] = useState({
     item_name: '',
     amount: 100000,
@@ -19,11 +20,14 @@ export default function WhatIf({ isDemo }) {
     purchase_date: '',
     notes: '',
   });
+  const [subForm, setSubForm] = useState({ item_name: '', monthly_cost: 1500, onetime_cost: 40000 });
+  const [subResult, setSubResult] = useState(null);
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [pinnedId, setPinnedId] = useState(null);
   const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const updSub = (k, v) => setSubForm((f) => ({ ...f, [k]: v }));
 
   const run = async () => {
     if (isDemo) {
@@ -67,6 +71,24 @@ export default function WhatIf({ isDemo }) {
     }
   };
 
+  const runSubscription = async () => {
+    if (isDemo) { setError('Sign up to compare recurring costs against a one-time buy.'); return; }
+    if (!subForm.item_name || !subForm.monthly_cost || !subForm.onetime_cost) {
+      setError('Fill in item, monthly cost and one-time cost.'); return;
+    }
+    setBusy(true); setError(''); setSubResult(null);
+    try {
+      const { data } = await api.post('/whatif/subscription', {
+        item_name: subForm.item_name.trim(),
+        monthly_cost: Number(subForm.monthly_cost),
+        onetime_cost: Number(subForm.onetime_cost),
+      });
+      setSubResult(data);
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Could not run comparison. Please try again.');
+    } finally { setBusy(false); }
+  };
+
   return (
     <div data-testid="whatif-page">
       <div className="page-intro">
@@ -78,6 +100,12 @@ export default function WhatIf({ isDemo }) {
         <span className="ai-badge"><Sparkles size={14} /> Claude Sonnet 5</span>
       </div>
 
+      <div className="settings-tabs" data-testid="whatif-mode-tabs">
+        <button data-testid="whatif-tab-purchase" className={`settings-tab ${mode === 'purchase' ? 'active' : ''}`} onClick={() => { setMode('purchase'); setError(''); }}>Purchase scenario</button>
+        <button data-testid="whatif-tab-subscription" className={`settings-tab ${mode === 'subscription' ? 'active' : ''}`} onClick={() => { setMode('subscription'); setError(''); }}>Subscription vs one-time</button>
+      </div>
+
+      {mode === 'purchase' && (<>
       <div className="wi-grid">
         <div className="wi-card wi-input-card" data-testid="whatif-input-card">
           <h3><Zap size={18} className="wi-icon-inline" /> Describe the scenario</h3>
@@ -148,6 +176,75 @@ export default function WhatIf({ isDemo }) {
       )}
 
       {result && (<p className="wi-disclaimer">{result.disclaimer}</p>)}
+      </>)}
+
+      {mode === 'subscription' && (
+        <>
+          <div className="wi-grid">
+            <div className="wi-card wi-input-card" data-testid="whatif-sub-input-card">
+              <h3><Zap size={18} className="wi-icon-inline" /> Compare subscription vs one-time buy</h3>
+              <div className="auth-field">
+                <label>What are you deciding on?</label>
+                <input data-testid="whatif-sub-item" value={subForm.item_name} onChange={(e) => updSub('item_name', e.target.value)} placeholder="e.g. Music streaming, gym, software" />
+              </div>
+              <div className="wi-two-col">
+                <div className="auth-field">
+                  <label>Monthly recurring cost (₹)</label>
+                  <input data-testid="whatif-sub-monthly" type="number" min="1" value={subForm.monthly_cost} onChange={(e) => updSub('monthly_cost', e.target.value)} />
+                </div>
+                <div className="auth-field">
+                  <label>One-time buy cost (₹)</label>
+                  <input data-testid="whatif-sub-onetime" type="number" min="1" value={subForm.onetime_cost} onChange={(e) => updSub('onetime_cost', e.target.value)} />
+                </div>
+              </div>
+              {error && <div className="auth-error" data-testid="whatif-sub-error">{error}</div>}
+              <button data-testid="whatif-sub-run" className="primary-btn full" onClick={runSubscription} disabled={busy}>
+                {busy ? (<><Loader2 size={16} className="wi-spin" /> Comparing…</>) : (<>Compare <ArrowRight size={16} /></>)}
+              </button>
+              <p className="wi-hint">Assumes 8% p.a. return on money not spent. Nothing here modifies your real data.</p>
+            </div>
+
+            {subResult && (
+              <div className="wi-card" data-testid="whatif-sub-verdict-card">
+                <h3><Sparkles size={18} className="wi-icon-inline" /> Verdict</h3>
+                <p className="wi-ai-reco" data-testid="whatif-sub-recommendation">{subResult.recommendation}</p>
+                {subResult.breakeven_months !== null && (
+                  <div className="wi-metric"><span>Break-even</span><b>{subResult.breakeven_months} months</b></div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {subResult && (
+            <div className="wi-options-grid" data-testid="whatif-sub-results">
+              <div className="wi-option" data-testid="whatif-sub-option-subscription">
+                <div className="wi-option-head"><h3>If you subscribe</h3></div>
+                <div className="wi-stats">
+                  <Stat label="Total paid in 5 yrs" value={money(subResult.subscription.total_paid_5y)} bad />
+                  <Stat label="Total paid in 10 yrs" value={money(subResult.subscription.total_paid_10y)} bad />
+                  <Stat label="If invested (5 yrs)" value={money(subResult.subscription.opportunity_cost_5y)} />
+                  <Stat label="If invested (10 yrs)" value={money(subResult.subscription.opportunity_cost_10y)} />
+                </div>
+                <p className="wi-pc" style={{ fontSize: 12 }}>The invested column shows how much wealth you'd build if you kept the money instead.</p>
+              </div>
+              <div className="wi-option wi-best" data-testid="whatif-sub-option-onetime">
+                <div className="wi-option-head">
+                  <span className="wi-best-badge"><Star size={12} /> If you buy once</span>
+                  <h3>Own it outright</h3>
+                </div>
+                <div className="wi-stats">
+                  <Stat label="Upfront cost" value={money(subResult.onetime.cost)} />
+                  <Stat label="Opportunity cost 5 yrs" value={money(subResult.onetime.future_value_5y)} />
+                  <Stat label="Opportunity cost 10 yrs" value={money(subResult.onetime.future_value_10y)} />
+                  <Stat label="Return assumed" value={`${subResult.annual_return_assumed}%`} />
+                </div>
+                <div className="wi-ai-note"><Sparkles size={12} /> {subResult.recommendation}</div>
+              </div>
+            </div>
+          )}
+          {subResult && <p className="wi-disclaimer">{subResult.disclaimer}</p>}
+        </>
+      )}
     </div>
   );
 }

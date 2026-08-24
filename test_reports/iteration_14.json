@@ -1,0 +1,58 @@
+{
+  "summary": "Iteration 14 — UPI Statement Reader + cross-verification, full-stack test. Backend: new suite /app/backend/tests/test_iteration14_upi.py (23 pytest cases) — 22 PASS / 1 FAIL. Verified: /statements/preview?source=upi returns source='upi' + a guess containing all four UPI-only fields correctly auto-mapped (merchant='To / From', upi_id='UPI ID', upi_ref='UPI Ref No', txn_id='Transaction ID') while a bank preview does NOT expose them; /statements/parse with source=upi returns source='upi', merchant/upi_ref/txn_id/upi_id per row, correct categories (Swiggy→Food, Amazon→Shopping, Landlord Rent→Rent), and the positive-amount+merchant+no-type-hint heuristic correctly yields Expense; /confirm-import persists source + all UPI metadata (legacy bodies without `source` still default to bank); /statements/verify returns counts + verified/possible/upi_only/bank_only + months and scores the three demo pairs at 0.90 (>=0.85) when the dates line up exactly; month filter works; /resolve-duplicate deletes one side, tags survivor verified=true (confirmed in DB and via /financial/overview), 404 for foreign ids, 400 when a field is missing, 401 unauthenticated for all new endpoints. Frontend: /statements shows all 3 tabs, UPI tab shows 'Upload your UPI statement' dropzone + Merchant/Ref column, an end-to-end UI upload (preview→auto-mapping→parse→import) of a Google-Pay CSV worked, Cross-verification renders 6 StatusCards + monthly-coverage card + 4 verified match-rows with Keep UPI/Keep bank, clicking 'Keep UPI' deleted the bank duplicate (matched 4→3, bank_total 6→5) and persisted across reload, empty-UPI state renders correctly. Bank-tab regression (mapping shows no UPI fields, debit/credit auto-map, parse, import, table refresh) passes. Regressions on /goals (priority chips + Up/Down/Edit/Delete), /whatif (both tabs), /twin (4 charts), /settings (6 tabs), google/start 302, /demo/overview all pass. Zero console errors. ONE REAL BUG: /financial/overview dedupe requires an EXACT date match while /verify matches ±3 days, so any pair the UI itself labels 'Verified match' with a 1-3 day gap is still double-counted in analytics.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/financial/overview", "issue": "Cross-source dedupe window disagrees with /statements/verify. Dedupe key is exact (amount,date,type); /verify matches within ±3 days. Reproduced: bank 'UPI/TEST_Gym Pro/555444333222' 1500 on 11 Aug 2026 + UPI 'TEST_Gym Pro' 1500 on 12 Aug 2026 → /verify returns it under verified_matches (score 0.85, ref match), but /financial/overview returns BOTH rows and spending totals count ₹3,000 instead of ₹1,500. This is exactly the 'must not double-count' requirement. Fix: dedupe using the same _match_score/±3d logic (or dedupe on upi_ref present in bank description), not string date equality. Failing test: TestRegressions::test_no_double_count_when_dates_differ_by_days", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/financial/overview", "issue": "Intra-source dedupe line `if sig in seen_keys and t.get('source') == 'bank'` never fires for legacy rows that have no `source` field (the seeded demo rows), unlike the line above it which uses .get('source','bank'). Observed 4 identical legacy bank rows all counted. Separately, silently dropping genuinely repeated identical bank transactions (e.g. two ₹120 chai payments same day) is wrong — recommend removing intra-source dedupe entirely."},
+      {"endpoint": "GET /api/financial/overview", "issue": "Transactions are read with .to_list(200) and /statements/verify with .limit(5000) — analytics silently truncate after 200 rows, and the two endpoints can therefore disagree once a user imports more than 200 transactions."},
+      {"endpoint": "GET /api/statements/verify", "issue": "FIXED BY TESTER: the endpoint returned raw Mongo docs with _id (stringified), user_id and created_at inside every bank_txn/upi_txn/upi_only/bank_only item. Now stripped in statements.py (_id/user_id/created_at/verified_at popped)."},
+      {"endpoint": "n/a — missing endpoint", "issue": "There is no DELETE /api/transactions/{id}. Imported/duplicated transactions can only be removed via /statements/resolve-duplicate or by wiping all data, so bad imports cannot be cleaned up by the user (and test data had to be removed directly from Mongo)."},
+      {"endpoint": "GET /api/statements/verify", "issue": "cross_verify() is O(bank × upi) with no index/bucketing and re-runs on every tab switch; at 5000 txns this is 25M comparisons in the request path."},
+      {"endpoint": "POST /api/statements/confirm-import", "issue": "No duplicate-import guard: re-uploading the same UPI statement inserts the rows again (verified — a second import of the same CSV created a second copy). Consider dedupe on (user_id, upi_ref/txn_id)."},
+      {"endpoint": "POST /api/statements/resolve-duplicate", "issue": "Body is an untyped `dict` (no Pydantic model), and the survivor update result is ignored — passing a valid drop_id with a bogus keep_id still returns 200 and reports verified:<bogus id> after deleting the row."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Dashboard / spending analytics after cross-verification", "issue": "Because of the backend ±3-day dedupe gap above, a pair displayed as a 90% 'Verified match' in the Cross-verification tab is still shown twice in the dashboard spending donut until the user manually clicks Keep UPI. The page copy ('Finaura reconciles them so nothing is double-counted') therefore over-promises.", "affected_selectors": ["[data-testid=verify-matched]", ".recharts-surface"]}
+    ],
+    "design_issues": [
+      {"screen": "/statements → Cross-verification", "issues": ["When there are no UPI transactions the 'UPI only' card renders a ~300px tall empty box next to a full 'Bank only' list — very unbalanced two-column grid; collapse or centre the empty state.", "The monthly-coverage pill 'UPI — (0)' is light grey on light grey (very low contrast) compared with the green 'Bank ✓ (8)' pill.", "'Keep UPI' (mint) and 'Keep bank' (plain) are stacked at the right edge of each match row with no visual hint that one is destructive — both delete a transaction permanently with no confirmation dialog and no undo."]},
+      {"screen": "Dashboard", "issues": ["'Monthly expenses ₹0 / savings rate 100%' is shown for a user who has 6 imported transactions — the summary card block is computed from profile fields only and ignores imported statement data, so the header KPIs contradict the spending donut below. Pre-existing, but now more visible with the UPI import flow."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration14_upi.py",
+    "/app/test_reports/pytest/iteration14.xml"
+  ],
+  "action_items": [
+    "HIGH: Make /financial/overview dedupe use the same ±3-day + amount/type (+ref) matching as cross_verify so 'verified' duplicates are never double-counted in analytics or the spending donut.",
+    "MEDIUM: Fix the legacy-row bug in the intra-source dedupe (t.get('source') == 'bank' vs .get('source','bank')) or drop intra-source dedupe — identical repeated bank transactions are legitimate.",
+    "MEDIUM: Replace .to_list(200) in /financial/overview with a consistent, higher limit (or aggregation) so analytics and /verify see the same data set.",
+    "MEDIUM: Add DELETE /api/transactions/{id} so users can remove wrongly imported rows.",
+    "LOW: Add a Pydantic model for /statements/resolve-duplicate and 404 when keep_id does not belong to the user (currently 200 with a bogus keep_id).",
+    "LOW: Guard against re-importing the same statement (dedupe on upi_ref/txn_id per user).",
+    "LOW (UI): confirmation step for Keep UPI/Keep bank (destructive, no undo); fix the empty 'UPI only' card height and the low-contrast 'UPI — (0)' pill."
+  ],
+  "critical_code_review_comments": [
+    "server.py overview(): two different source checks in the same loop (.get('source','bank') vs .get('source')) — the second silently no-ops for the seeded demo rows that have no source field.",
+    "statements.py cross_verify() and server.py overview() implement two independent notions of 'duplicate'. Extract one shared matcher and reuse it in both places, otherwise the UI and the analytics will always disagree.",
+    "/statements/verify returned raw Mongo documents (fixed by tester); use a projection or a _clean() helper everywhere transactions leave the DB layer.",
+    "resolve_duplicate() ignores the update_one result for keep_id, so a mismatched keep_id deletes data and reports success.",
+    "App.js is 1587 lines and now also hosts VerificationView/MatchList/MiniList/StatusCard — split the Statements + verification UI into its own module (>700-line guideline)."
+  ],
+  "updated_files": [
+    "/app/backend/statements.py (verify endpoint: strip _id/user_id/created_at/verified_at from returned transactions)",
+    "/app/backend/tests/test_iteration14_upi.py (new)"
+  ],
+  "success_rate": {"backend": "96% (22/23)", "frontend": "100%"},
+  "seed_data_creation": "Temporarily imported Google-Pay style UPI CSVs (Swiggy 450, Landlord Rent 32000, Amazon 3890, TEST_UPI Only Cafe 260, TEST_UI Netflix 649, TEST_UI Chai Point 120) plus TEST_ bank rows for testuser@finaura.dev. ALL removed afterwards; the bank SWIGGY 450 12 Aug demo row consumed by the resolve-duplicate UI test was re-inserted, so testuser is back to its original 6 demo bank transactions (SALARY 185000, RENT PAYMENT 32000, AMAZON INDIA 3890, METRO CARD 1250, NETFLIX 649, SWIGGY 450).",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "testuser@finaura.dev / testpass123 (from /app/memory/test_credentials.md) — valid, login works",
+  "context_for_next_testing_agent": "Run: cd /app/backend && python -m pytest tests/test_iteration14_upi.py -n 0 -p no:randomly. The suite is NOT xdist-safe (session fixture imports shared UPI data) — always pass -n 0. Only test_no_double_count_when_dates_differ_by_days fails; it is the ±3-day dedupe bug and should pass once overview() reuses cross_verify's matcher. Note there is no DELETE /api/transactions/{id}, so the suite cleans up directly via Mongo (db_cleanup helper in the test file). Demo bank rows for testuser have NO `source` field at all (legacy) — keep using .get('source','bank') in assertions. UPI verified matches only reach 0.90 when the UPI date equals the bank date exactly.",
+  "rca_of_the_issue": "Root cause of the double-count bug: /api/financial/overview builds its duplicate signature as the tuple (amount, date_string, type) and requires exact equality, whereas statements.cross_verify/_match_score deliberately tolerate a ±3 day settlement lag (UPI shows the payment date, the bank shows the settlement date). Any pair with a 1-3 day gap is therefore reported as a Verified match in the Cross-verification tab yet counted twice in transactions[] and _compute_spending(). Reproduction: import UPI 'Gym Pro' 1500 on 12 Aug 2026 and bank 'UPI/Gym Pro/<ref>' 1500 on 11 Aug 2026 → GET /api/statements/verify shows 1 verified match; GET /api/financial/overview returns both rows and spending Other = 3000. Mitigation: extract a single matcher used by both endpoints (amount+type equality, |Δdate| ≤ 3, ref/description corroboration) and drop the bank side from analytics when it matches."
+}

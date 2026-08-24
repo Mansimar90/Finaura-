@@ -210,6 +210,24 @@ async def overview(user=Depends(get_current_user)):
     goals = await _load_ordered_goals(uid)
     txns_cursor = db.finaura_transactions.find({"user_id": uid})
     transactions = [_clean(t) for t in await txns_cursor.to_list(200)]
+    # Cross-source dedupe: if same amount+date+type appears in both bank & UPI, count once.
+    # Prefer keeping the UPI entry (richer merchant/category), drop bank duplicate from analytics.
+    seen_keys: set = set()
+    deduped: list = []
+    upi_signatures = {
+        (t.get("amount"), t.get("date"), t.get("type"))
+        for t in transactions if t.get("source") == "upi"
+    }
+    for t in transactions:
+        sig = (t.get("amount"), t.get("date"), t.get("type"))
+        if t.get("source", "bank") == "bank" and sig in upi_signatures:
+            # duplicate of a UPI txn — skip in analytics (mark visually only)
+            continue
+        if sig in seen_keys and t.get("source") == "bank":
+            continue
+        seen_keys.add(sig)
+        deduped.append(t)
+    transactions = deduped
     profile = user.get("profile") or {}
     if user.get("has_demo_data") and profile == {}:
         # Use demo summary snapshot for demo-imported users so metrics show

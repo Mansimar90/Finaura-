@@ -1,0 +1,56 @@
+{
+  "summary": "Iteration 13 full-stack test. Backend: created /app/backend/tests/test_iteration13.py with 38 pytest cases — ALL 38 PASS. Covered the Goals partial-PATCH priority fix (persistence, all 3 values, order-stability, 400 on empty body, 404, 401), Goals CRUD + reorder + foreign-id authz + no _id leak, the two NEW endpoints (POST /api/whatif/subscription and POST /api/whatif/twin) for auth-gating, response shape, math correctness (SIP FV + lump-sum compounding verified against closed-form), validation 422s and no-mutation of goals/transactions, plus regressions (auth/me picture, auth/config, google/start 302, demo overview, settings preferences/export, learn, purchase scenario returning 4 AI options with ai_available=true). Frontend: the reported /goals bug is FIXED end-to-end — priority chips are visible on every card, clicking persists via PATCH and the highlight survives a full reload; the 4-button action bar works, Up/Down are correctly disabled at boundaries, reorder persists across reload, Edit opens a pre-filled modal, Delete opens the styled confirm-delete-modal (native window.confirm NOT used). /twin auto-runs on mount, shows 5y ₹44.51 L / 10y ₹1.07 Cr, renders the Recharts line chart with 3 (then 4) lines, boost_25 + extra_income scenario cards, and lump_sum appears when supplied; overriding monthly savings/return changes the projection. /whatif has both tabs working; Subscription tab renders both comparison cards + verdict card with recommendation; purchase tab still returns 4 Claude options and the previously-broken 'Pinned to AI memory' badge now renders correctly. Zero console errors on all three pages. No blocking defects found; remaining items are spec/polish level.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/whatif/twin", "issue": "SPEC DEVIATION: returns only 2 scenarios by default (boost_25, extra_income); the review request states 3 items when no lump_sum is given. With lump_sum it returns 3. Either add a third default scenario or correct the spec."},
+      {"endpoint": "POST /api/whatif/twin", "issue": "baseline.series / scenario.series only emit months 12,24,36,48,60,84,120 — years 6, 8 and 9 are missing. Because the frontend XAxis is categorical (dataKey='year'), Yr5→Yr7 and Yr7→Yr10 are rendered with the same pixel width as Yr1→Yr2, visually distorting the growth curve. Emit every 12 months (1..10)."},
+      {"endpoint": "POST /api/whatif/twin", "issue": "features.py project(): final_5y is read positionally as series[4] and final_10y as series[-1]. This silently returns the wrong year if the sampling list ever changes, and final_5y becomes null for months<60. Select by month == 60 / month == 120 explicitly."},
+      {"endpoint": "POST /api/whatif/subscription and /twin", "issue": "Server-generated strings use western digit grouping (e.g. 'costs ₹110,950', 'label: ₹100,000 lump sum in year 1') via Python format(:,), while the entire UI uses en-IN grouping (₹1,10,950). Numbers formatted by the backend look wrong next to numbers formatted by the frontend."},
+      {"endpoint": "POST /api/whatif/subscription", "issue": "annual return is hardcoded to 8.0 with no override param (unlike /twin which accepts annual_return), and the endpoint ignores the user's profile entirely, so 'opportunity cost' is not personalised even though the endpoint requires auth."},
+      {"endpoint": "POST /api/whatif/subscription", "issue": "Naming mismatch: the API returns onetime.future_value_5y/10y but the UI labels those same numbers 'OPPORTUNITY COST 5 YRS', while the subscription card labels subscription.opportunity_cost_* as 'IF INVESTED'. Same concept, two different labels in one screen."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/twin (Digital Twin) — guest/demo mode (/demo/twin)", "issues": ["For a guest the page renders only the empty 'Fine-tune your twin' form: run() is skipped when isDemo, so there is no chart, no projection, no explanatory copy and no sign-up CTA — it looks broken. The 'Sign up to project your own net worth' message only appears after the user clicks Update projection. Show a demo projection or an upfront CTA."]},
+      {"screen": "/twin net-worth chart", "issues": ["X axis ticks are Yr 1,2,3,4,5,7,10 (categorical, uneven spacing) — see backend series issue; the curve shape misrepresents time."]},
+      {"screen": "/whatif — Subscription vs one-time tab", "issues": ["The 'Claude Sonnet 5' AI badge stays in the page header on the Subscription tab even though this tab is pure deterministic math with no LLM call — misleading.", "The Verdict card has a large empty area below 'Break-even' (~40% blank) while the left form card is compact; the two-column grid looks unbalanced.", "Label inconsistency between the two comparison cards ('IF INVESTED (5 YRS)' vs 'OPPORTUNITY COST 5 YRS' for the same concept)."]},
+      {"screen": "/whatif — Purchase scenario tab", "issues": ["STILL OPEN from iteration 12: 'Purchase date (optional)' uses the browser-native date input showing mm/dd/yyyy instead of the app's calendar component — US date order in an INR/India-focused app."]},
+      {"screen": "/goals — delete confirmation modal", "issues": ["STILL OPEN from iteration 12: the primary 'Delete goal' action (danger-btn) is light red text on light pink; contrast is clearly below the neutral Cancel button next to it and hard to read."]},
+      {"screen": "/goals — goal card", "issues": ["The 'LOW PRIORITY / MEDIUM PRIORITY' pill in the card's top-right is very light grey/amber on white and is much lower contrast than the new priority chips directly below it; the two now duplicate the same information."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration13.py",
+    "/app/test_reports/pytest/iteration13.xml"
+  ],
+  "action_items": [
+    "SPEC: Decide on the twin default scenario count — implementation returns 2 without lump_sum, the spec says 3. Add a third default scenario or update the spec/frontend copy.",
+    "MEDIUM: Emit the twin projection series at every 12 months (years 1-10) so the Recharts x-axis is evenly spaced; today years 6, 8, 9 are missing and the curve is distorted.",
+    "MEDIUM: Handle the guest state on /demo/twin — currently a blank form with no chart, no copy and no sign-up CTA.",
+    "LOW: Format backend-generated currency strings with Indian digit grouping (lakh/crore) to match the UI (₹1,10,950 not ₹110,950).",
+    "LOW: Select twin final_5y/final_10y by month (60/120) instead of series index [4]/[-1].",
+    "LOW: Hide the 'Claude Sonnet 5' badge on the Subscription tab (no LLM involved) and unify the 'if invested' / 'opportunity cost' labels across the two comparison cards.",
+    "LOW (carried over, still unfixed): raise contrast on the danger 'Delete goal' button; replace the native date input on the What-If purchase form with the app calendar component.",
+    "LOW: Consider allowing annual_return on /whatif/subscription (or drop the auth requirement, since the endpoint reads nothing from the user)."
+  ],
+  "critical_code_review_comments": [
+    "features.py digital_twin(): project() is called 3-4 times, each looping 120 months and re-scanning `if m in (12,24,...)`. Fine at this scale but the sampling tuple and the positional series[4] lookup are coupled — extract the sample months to a module constant and index by month.",
+    "features.py: SubscriptionInput / TwinInput / ScenarioInput are declared AFTER build_whatif_router() in the file (lines 440-450 vs usage at 326/369). It works only because the annotations are resolved at call time inside the closure; moving anything will break it. Move all Pydantic models above the router factory.",
+    "features.py is at 685 lines and holds learn + whatif + scenario + twin + LLM plumbing; split the What-If/Twin engine into its own module before it crosses the 700-line guideline.",
+    "App.js is 1403 lines — Goals (with the new priority row + action bar), Settings and Dashboard should be extracted into src/pages/ files.",
+    "DigitalTwin.jsx line 40: useEffect(() => { if (!isDemo) run(); }, []) with an eslint-disable — run() closes over monthlySavings/annualReturn/lumpSum. It works today only because the effect runs once with initial state; if the parent ever remounts with saved inputs the auto-run will use stale values.",
+    "DigitalTwin.jsx: no empty/zero-savings guidance — with monthly_savings=0 the boost_25 scenario is numerically identical to baseline and renders a '+0%' card that tells the user nothing (verified via backend test_zero_savings_edge)."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration13.py", "/app/test_reports/iteration_13.json"],
+  "success_rate": {"backend": "100% (38/38)", "frontend": "100% of tested flows functional; 6 design/polish issues open"},
+  "seed_data_creation": "Temporary TEST_* goals created and deleted via fixture teardown; the existing testuser@finaura.dev demo goals (Emergency Fund / Higher Education / Car) had priority and order changed during UI testing and were left in that state (Emergency Fund is now Low priority and second in order). No other data mutated.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "testuser@finaura.dev / testpass123 — valid, login works on the public URL",
+  "context_for_next_testing_agent": "Regression suite for this iteration is /app/backend/tests/test_iteration13.py (38 cases, all green, run with the pre-configured pytest.ini -n 2 --dist loadscope). Note: no-mutation assertions must compare a single fixture-created goal, NOT the whole goals array — xdist loadscope runs classes in parallel on a shared backend and other classes create/delete goals concurrently. /api/whatif/scenario expects field `amount`, not `price`. Iteration-12 bugs confirmed FIXED: pin-to-memory badge (whatif-pinned-<id>) now renders, PATCH /api/goals/{id} is now a true partial update via GoalPatchInput, guest What-If now shows a friendly message instead of raw 'Not authenticated'. Still unfixed from iteration 12: native date picker on What-If, low-contrast danger 'Delete goal' button.",
+  "rca_of_the_issue": "Original /goals discoverability bug is resolved: App.js now renders a persistent .goal-priority-row (3 chips with data-testid priority-{level}-{goalId}) and a .goal-action-bar (Up/Down/Edit/Delete) on every non-demo card, and server.py switched PATCH /api/goals/{id} from the all-required GoalInput to GoalPatchInput with exclude_none, which is what makes the priority-only PATCH from changePriority() succeed. Verified in the browser: chip click -> PATCH 200 -> reload -> highlight still on the new chip; _load_ordered_goals sorts by `order` first so a priority change does not reshuffle cards (covered by test_priority_change_does_not_move_card)."
+}

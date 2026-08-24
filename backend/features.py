@@ -322,10 +322,154 @@ def build_whatif_router(get_current_user, db: Optional[AsyncIOMotorDatabase] = N
         })
         return {"pinned": True, "memory_id": key}
 
+    # ---------- RECURRING vs ONE-TIME COMPARISON ----------
+    @router.post("/subscription")
+    async def subscription_compare(body: SubscriptionInput, user=Depends(get_current_user)):
+        """Compare a recurring monthly cost against a one-time buy, including 5-year
+        opportunity cost if that money were invested at the expected return."""
+        annual_return = 8.0  # conservative Indian equity/hybrid assumption
+        r = annual_return / 100.0 / 12.0
+        months_5y = 60
+        months_10y = 120
+        # Total spent on subscription over horizon
+        sub_5y_paid = body.monthly_cost * months_5y
+        sub_10y_paid = body.monthly_cost * months_10y
+        # If the recurring amount was invested each month instead (SIP FV formula)
+        sub_5y_fv = _sip_future_value(body.monthly_cost, r, months_5y)
+        sub_10y_fv = _sip_future_value(body.monthly_cost, r, months_10y)
+        # If the one-time price was invested as a lump sum (compound)
+        onetime_5y_fv = body.onetime_cost * ((1 + r) ** months_5y)
+        onetime_10y_fv = body.onetime_cost * ((1 + r) ** months_10y)
+        # Break-even months (subscription cumulative cost > one-time)
+        breakeven_months = None
+        if body.monthly_cost > 0 and body.onetime_cost > 0:
+            breakeven_months = int(round(body.onetime_cost / body.monthly_cost))
+        return {
+            "item_name": body.item_name,
+            "monthly_cost": body.monthly_cost,
+            "onetime_cost": body.onetime_cost,
+            "annual_return_assumed": annual_return,
+            "subscription": {
+                "total_paid_5y": round(sub_5y_paid),
+                "total_paid_10y": round(sub_10y_paid),
+                "opportunity_cost_5y": round(sub_5y_fv),
+                "opportunity_cost_10y": round(sub_10y_fv),
+            },
+            "onetime": {
+                "cost": body.onetime_cost,
+                "future_value_5y": round(onetime_5y_fv),
+                "future_value_10y": round(onetime_10y_fv),
+            },
+            "breakeven_months": breakeven_months,
+            "recommendation": _sub_vs_onetime_recommendation(body, breakeven_months, sub_5y_paid, sub_5y_fv),
+            "disclaimer": "Projections assume ~8% p.a. return and are illustrative. Not personalised financial advice.",
+        }
+
+    # ---------- DIGITAL TWIN — net-worth projection ----------
+    @router.post("/twin")
+    async def digital_twin(body: TwinInput, user=Depends(get_current_user)):
+        """Project the user's net worth 5 and 10 years out, using their real profile
+        as the baseline. Also compute up to 3 side-scenarios (increased savings, extra
+        income, one-off lump sum, whatever the user provided)."""
+        profile = user.get("profile") or {}
+        base_savings = int(profile.get("current_savings", 0) or 0) + int(profile.get("investments", 0) or 0)
+        income = int(profile.get("monthly_income", 0) or 0)
+        expenses = int(profile.get("monthly_expenses", 0) or 0)
+        emi = int(profile.get("emi", 0) or 0)
+        default_monthly = max(0, income - expenses - emi)
+
+        # allow the user to override monthly_savings for the twin
+        monthly_savings = body.monthly_savings if body.monthly_savings is not None else default_monthly
+        rate = body.annual_return if body.annual_return is not None else 8.0
+        r = rate / 100.0 / 12.0
+
+        def project(base, monthly, months, lump_sum_month=None, lump_sum=0):
+            series = []
+            bal = base
+            for m in range(1, months + 1):
+                bal = bal * (1 + r) + monthly
+                if lump_sum_month and m == lump_sum_month and lump_sum:
+                    bal += lump_sum
+                if m in (12, 24, 36, 48, 60, 84, 120):
+                    series.append({"month": m, "year": round(m / 12, 1), "balance": round(bal)})
+            return {"final_5y": series[4]["balance"] if len(series) > 4 else None,
+                    "final_10y": series[-1]["balance"], "series": series}
+
+        baseline = project(base_savings, monthly_savings, 120)
+
+        scenarios = []
+        # Boost 1: +25% savings
+        boosted_monthly = int(monthly_savings * 1.25)
+        scenarios.append({
+            "id": "boost_25", "label": "Save 25% more each month",
+            "monthly_savings": boosted_monthly,
+            **project(base_savings, boosted_monthly, 120),
+        })
+        # Boost 2: extra ₹5k/mo income
+        scenarios.append({
+            "id": "extra_income", "label": "+₹5,000 extra income / month",
+            "monthly_savings": monthly_savings + 5000,
+            **project(base_savings, monthly_savings + 5000, 120),
+        })
+        # Boost 3: user-supplied lump sum in month 12
+        if body.lump_sum and body.lump_sum > 0:
+            scenarios.append({
+                "id": "lump_sum", "label": f"₹{body.lump_sum:,} lump sum in year 1",
+                "monthly_savings": monthly_savings,
+                **project(base_savings, monthly_savings, 120, lump_sum_month=12, lump_sum=body.lump_sum),
+            })
+
+        return {
+            "user_snapshot": {
+                "base_networth": base_savings,
+                "monthly_savings": monthly_savings,
+                "assumed_return_pct": rate,
+                "monthly_income": income,
+                "monthly_expenses": expenses,
+            },
+            "baseline": baseline,
+            "scenarios": scenarios,
+            "disclaimer": "Illustrative projection. Real returns vary. Consult a SEBI-registered advisor for personalised planning.",
+        }
+
     return router
 
 
 # ---------- SCENARIO HELPERS ----------
+
+class SubscriptionInput(BaseModel):
+    item_name: str = Field(min_length=1, max_length=120)
+    monthly_cost: int = Field(gt=0, le=10_00_000)
+    onetime_cost: int = Field(gt=0, le=10_00_00_000)
+
+
+class TwinInput(BaseModel):
+    monthly_savings: Optional[int] = Field(default=None, ge=0, le=10_00_000)
+    annual_return: Optional[float] = Field(default=None, ge=0.0, le=30.0)
+    lump_sum: Optional[int] = Field(default=None, ge=0, le=10_00_00_000)
+
+
+def _sip_future_value(monthly: float, r_monthly: float, months: int) -> float:
+    if r_monthly <= 0:
+        return monthly * months
+    return monthly * ((((1 + r_monthly) ** months) - 1) / r_monthly) * (1 + r_monthly)
+
+
+def _sub_vs_onetime_recommendation(body, breakeven_months, sub_5y_paid, sub_5y_fv):
+    if breakeven_months is None:
+        return "Enter both a monthly cost and a one-time price to compare."
+    years = breakeven_months / 12.0
+    if breakeven_months <= 12:
+        return (
+            f"If you'll use this longer than {breakeven_months} months (~{years:.1f} yr), "
+            f"buying once is cheaper. Over 5 years, subscribing costs ₹{sub_5y_paid:,}."
+        )
+    else:
+        return (
+            f"Buying once pays back after ~{years:.1f} years. Subscribing frees cash short-term "
+            f"but costs ₹{sub_5y_paid:,} over 5 years (or ₹{round(sub_5y_fv):,} if that money was invested)."
+        )
+
 
 class ScenarioInput(BaseModel):
     item_name: str = Field(min_length=1, max_length=120)
