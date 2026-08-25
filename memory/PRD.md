@@ -50,6 +50,10 @@ Finaura is an AI-powered personal financial intelligence platform that helps use
   - **Demo purge on real upload**: on the first real (non-demo) `/statements/confirm-import`, all demo-flagged rows/goals are removed and `has_real_data=true`; `/statements/import-demo` then returns 409.
   - **Dark-mode text readability**: global CSS overrides in `App.css` for muted text, borders, and card backgrounds in dark mode.
   - **Testing**: 32/32 iteration-18 P0 tests pass; 18/18 new iteration-19 verify + unit tests pass; 125/125 combined serial run pass. Full report in `/app/test_reports/iteration_19.json`.
+- Phase 8.1 (Feb 25, 2026 — hotfix): **Real-bank-statement column mapping fix**.
+  - **Bug**: HDFC / ICICI / SBI-like statements were auto-mapping the *amount* slot to a date-looking column (e.g. "Value Date", "Value Dt") because the `find("amount", "value", ...)` heuristic matched "value" as a substring. With amount mapped to a date column, every row parsed to amount=0.0 and got skipped, so the Review step showed 0 transactions.
+  - **Fix**: `_auto_map_columns` now (a) skips columns whose tokens include `date`/`dt` when picking the amount slot, and (b) reorders aliases to `"amount"` → `"txn amount"` → `"value"` (last, and only for non-date columns). `parse_csv` also now falls back from a mis-mapped amount column to the Debit/Credit pair when the amount cell yields 0.0 — so even if a future column name confuses auto-map, real debit/credit numbers still get picked up. Added "withdrawl" (misspelled) as a debit alias.
+  - **Verified against** HDFC ("Withdrawal Amt./Deposit Amt."), ICICI ("Debit/Credit"), SBI ("Debit/Credit + Value Date") and GPay/PhonePe-style UPI exports — all import 3/3 rows with correct Expense/Income classification. All 200 backend tests still green.
 
 ## Prioritized backlog
 - **P1** — Goal edit/delete UI (backend already supports PATCH/DELETE).

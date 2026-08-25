@@ -198,9 +198,16 @@ def _auto_map_columns(columns: list[str], source: str = "bank") -> dict:
     # Short aliases (2-3 chars like 'cr', 'dr') must match as whole tokens so they
     # don't hit substrings inside longer column names (e.g. 'cr' inside 'Description').
     SHORT = {"cr", "dr", "c", "d"}
-    def find(*names):
+    # Columns that look like a date must never be picked for the amount slot even
+    # if they contain a substring like 'value' (e.g. 'Value Date', 'Value Dt').
+    def is_date_col(k: str) -> bool:
+        toks = re.split(r"[^a-z0-9]+", k)
+        return any(t in ("date", "dt") for t in toks)
+    def find(*names, skip_date_cols: bool = False):
         for n in names:
             for k, v in lower.items():
+                if skip_date_cols and is_date_col(k):
+                    continue
                 if n in SHORT:
                     tokens = re.split(r"[^a-z0-9]+", k)
                     if n in tokens:
@@ -211,8 +218,9 @@ def _auto_map_columns(columns: list[str], source: str = "bank") -> dict:
     base = {
         "date": find("date", "txn date", "value date", "posting", "transaction time", "time"),
         "description": find("description", "narration", "particulars", "details", "remarks", "note", "to / from", "merchant"),
-        "amount": find("amount", "value", "txn amount"),
-        "debit": find("debit", "withdrawal", "dr"),
+        # Amount must not accidentally map to a date column named "Value Date".
+        "amount": find("amount", "txn amount", "value", skip_date_cols=True),
+        "debit": find("debit", "withdrawal", "withdrawl", "dr"),
         "credit": find("credit", "deposit", "cr"),
         "type": find("type", "cr/dr", "dr/cr", "direction", "payment type"),
     }
@@ -238,11 +246,21 @@ def parse_csv(content: bytes, mapping: dict, source: str = "bank") -> list[dict]
         if mapping.get("amount"):
             amount = normalize_amount(row.get(mapping["amount"]))
             txn_type, amount = _detect_type(amount, str(type_hint) if type_hint else None)
+        # If amount didn't yield a real number (e.g. an amount column was mis-detected
+        # as a date column), fall back to Debit/Credit pair when either is available.
+        if amount <= 0 and (mapping.get("debit") or mapping.get("credit")):
+            dr = normalize_amount(row.get(mapping.get("debit"))) if mapping.get("debit") else 0
+            cr = normalize_amount(row.get(mapping.get("credit"))) if mapping.get("credit") else 0
+            if cr:
+                txn_type = "Income"; amount = abs(cr)
+            elif dr:
+                txn_type = "Expense"; amount = abs(dr)
+        if amount > 0 and mapping.get("amount"):
             # Bank + UPI heuristic: when the statement has only an unsigned Amount column
             # (no Debit/Credit split, no Type/CR/DR hint), positive amounts are outbound
             # payments UNLESS the narration or merchant looks like an inflow. This prevents
             # everyday debits (Swiggy, BigBasket, etc.) from being misread as Income.
-            if not type_hint and amount > 0:
+            if not type_hint and not (mapping.get("debit") or mapping.get("credit")):
                 merchant_val = str(row.get(mapping.get("merchant"), "") or "").lower() if mapping.get("merchant") else ""
                 desc_check = f"{str(desc_val) or ''} {merchant_val}".lower()
                 income_kws = CATEGORY_KEYWORDS["Income"] + [
@@ -251,13 +269,6 @@ def parse_csv(content: bytes, mapping: dict, source: str = "bank") -> list[dict]
                 ]
                 is_receive = any(kw in desc_check for kw in income_kws)
                 txn_type = "Income" if is_receive else "Expense"
-        elif mapping.get("debit") or mapping.get("credit"):
-            dr = normalize_amount(row.get(mapping.get("debit"))) if mapping.get("debit") else 0
-            cr = normalize_amount(row.get(mapping.get("credit"))) if mapping.get("credit") else 0
-            if cr:
-                txn_type = "Income"; amount = abs(cr)
-            elif dr:
-                txn_type = "Expense"; amount = abs(dr)
         if amount <= 0 or not str(desc_val).strip():
             continue
         desc = str(desc_val).strip()[:120]
