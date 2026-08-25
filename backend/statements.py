@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import io
+import os
+import json as _json_mod
 import re
 import uuid
 import logging
@@ -416,6 +418,131 @@ ALLOWED_TYPES = {"Income", "Expense"}
 ALLOWED_SOURCES = {"bank", "upi"}
 
 
+# -------- AI-powered review pass (auto-categorize + sanity-check) --------
+
+def _rule_based_ai_review(transactions: list[dict]) -> list[dict]:
+    """Deterministic fallback: clean up mangled descriptions, resolve type/category
+    without an LLM. Used when EMERGENT_LLM_KEY is missing or the LLM call fails."""
+    out = []
+    for t in transactions:
+        desc = str(t.get("description") or "").strip()
+        # If description degenerated to a stop-word remnant like just 'to' / 'from',
+        # try to recover context from merchant / upi_id fields.
+        if len(desc) < 4 or desc.lower() in {"to", "from", "paid", "sent", "received"}:
+            recover = (t.get("merchant") or t.get("upi_id") or "").strip()
+            if recover:
+                desc = recover
+            else:
+                desc = "Uncategorized transaction"
+        txn_type = t.get("type") if t.get("type") in ALLOWED_TYPES else "Expense"
+        # Force sign-of-amount handling to positive
+        try:
+            amt = abs(float(t.get("amount") or 0))
+        except (TypeError, ValueError):
+            amt = 0.0
+        cat_source = f"{t.get('merchant') or ''} {desc}".strip()
+        txn_type, category = resolve_type_and_category(cat_source, txn_type, t.get("category"))
+        # If income-side row still ended up on a debit category (or vice versa), coerce.
+        if txn_type == "Expense" and category == "Income":
+            category = guess_category(cat_source, "Expense") or "Miscellaneous Debit"
+        if txn_type == "Income" and category not in ("Income", "Miscellaneous Credit", "Internal Transfer"):
+            category = "Income"
+        cleaned = {**t, "description": desc[:120], "type": txn_type,
+                   "category": category if category in ALLOWED_CATEGORIES else "Other",
+                   "amount": round(amt, 2), "ai_reviewed": False}
+        out.append(cleaned)
+    return out
+
+
+async def ai_review_transactions(transactions: list[dict], source: str = "bank") -> tuple[list[dict], bool, str]:
+    """Ask Claude Sonnet 5 to double-check each parsed transaction: fix mangled
+    descriptions, pick the best Category, and confirm Type. Returns
+    (cleaned_transactions, ai_used, note). Rule-based fallback if no key/LLM error."""
+    if not transactions:
+        return [], False, "empty"
+    # Rule-based first — LLM only enriches confident output.
+    baseline = _rule_based_ai_review(transactions)
+    key = os.environ.get("EMERGENT_LLM_KEY")
+    if not key:
+        return baseline, False, "no_llm_key"
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+    except Exception:
+        return baseline, False, "no_llm_lib"
+
+    # Keep the prompt compact — send only the fields Claude needs.
+    slim = [{
+        "i": idx,
+        "date": t.get("date"),
+        "description": t.get("description"),
+        "merchant": t.get("merchant"),
+        "amount": t.get("amount"),
+        "type": t.get("type"),
+        "category": t.get("category"),
+    } for idx, t in enumerate(baseline)]
+
+    system = (
+        "You are FINAURA AI's statement reviewer. You are given a list of transactions "
+        "extracted from a bank or UPI statement. For each transaction, do THREE things: "
+        "(1) if the description is mangled or too short (e.g. just 'to' or 'from'), rewrite "
+        "it into a short human-readable label using the merchant field or any brand you can "
+        "recognise from the raw text; keep it under 60 characters. "
+        "(2) pick the CORRECT type — 'Expense' when the money leaves the user, 'Income' when "
+        "it comes in (salary, refund, cashback, interest, dividend, received-from). "
+        "(3) assign the best category from this fixed list: Income, Food, Shopping, Transport, "
+        "Rent, Bills, Education, Entertainment, Healthcare, Other, Miscellaneous Credit, "
+        "Miscellaneous Debit, Internal Transfer. Rules: Type=Income MUST get category Income "
+        "(or Miscellaneous Credit / Internal Transfer). Type=Expense must NEVER get category "
+        "Income. Groceries -> Shopping. Metro/Uber/Ola/petrol -> Transport. Electricity/mobile/"
+        "recharge/DTH/broadband -> Bills. Amazon/Flipkart/Myntra -> Shopping. Swiggy/Zomato/"
+        "restaurants -> Food. Netflix/Prime/Spotify/BookMyShow -> Entertainment. Doctor/hospital/"
+        "pharmacy/apollo -> Healthcare. Rent/landlord -> Rent. Fees/school/course/udemy -> "
+        "Education. Reply with STRICT JSON only — no prose, no code fences."
+    )
+    prompt = (
+        f"Source: {source}. Transactions ({len(slim)}): {_json_mod.dumps(slim)}\n\n"
+        'JSON schema: {"items": [{"i": 0, "description": "...", "type": "Expense|Income", '
+        '"category": "one of the allowed values"}, ...]}'
+    )
+    try:
+        chat = LlmChat(
+            api_key=key,
+            session_id=f"stmt-review-{int(datetime.now().timestamp())}",
+            system_message=system,
+        ).with_model("anthropic", "claude-sonnet-5")
+        resp = await chat.send_message(UserMessage(text=prompt))
+        text = getattr(resp, "text", None) or str(resp)
+        s = text.strip()
+        if s.startswith("```"):
+            s = s.strip("`")
+            if s.lower().startswith("json"):
+                s = s[4:]
+            s = s.strip()
+        first = s.find("{"); last = s.rfind("}")
+        if first < 0 or last < 0:
+            raise ValueError("no json object")
+        parsed = _json_mod.loads(s[first : last + 1])
+        items = parsed.get("items") or []
+        by_index = {int(x.get("i", -1)): x for x in items if isinstance(x, dict)}
+        result = []
+        for idx, base in enumerate(baseline):
+            override = by_index.get(idx) or {}
+            new_desc = str(override.get("description") or base.get("description") or "").strip()[:120]
+            new_type = override.get("type") if override.get("type") in ALLOWED_TYPES else base.get("type")
+            new_cat = override.get("category") if override.get("category") in ALLOWED_CATEGORIES else base.get("category")
+            # Sanity: never allow Expense with category Income (or vice versa) even if LLM slips.
+            if new_type == "Expense" and new_cat == "Income":
+                new_cat = "Miscellaneous Debit"
+            if new_type == "Income" and new_cat not in ("Income", "Miscellaneous Credit", "Internal Transfer"):
+                new_cat = "Income"
+            result.append({**base, "description": new_desc, "type": new_type,
+                           "category": new_cat, "ai_reviewed": True})
+        return result, True, "ok"
+    except Exception as exc:
+        log.warning("ai_review_transactions LLM error: %s", exc)
+        return baseline, False, f"llm_error"
+
+
 # Words that indicate a transfer that must NOT be counted as income
 INTERNAL_TRANSFER_HINTS = ("self transfer", "own account", "linked account", "credit card payment",
                           "cc payment", "sweep", "auto sweep", "transfer to self",
@@ -435,6 +562,11 @@ class ResolveDuplicateInput(BaseModel):
 
 class VerifyInput(BaseModel):
     month: str | None = None  # "Feb 2026" — optional; None = all months
+
+
+class AiReviewInput(BaseModel):
+    transactions: list[dict]
+    source: str | None = "bank"
 
 
 def _txn_month(txn: dict) -> str:
@@ -691,6 +823,19 @@ def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
             transactions, _ = parse_pdf(raw, source=source)
             return {"transactions": transactions, "source": source}
         raise HTTPException(status_code=415, detail="Unsupported file.")
+
+    @router.post("/ai-review")
+    async def ai_review(body: AiReviewInput, user=Depends(get_current_user)):
+        """Second-pass AI review of parsed transactions before the user sees them.
+        Cleans up mangled descriptions and picks the best Category so the user does
+        NOT have to hand-tag every row. Falls back to a rule-based pass if the LLM
+        is unavailable. Nothing is stored — the frontend then shows the cleaned list
+        in the Review step, and users can still edit any row."""
+        source = body.source if body.source in ALLOWED_SOURCES else "bank"
+        # Guard: at most 200 transactions per call to keep prompt small.
+        txns = list(body.transactions or [])[:200]
+        cleaned, ai_used, note = await ai_review_transactions(txns, source=source)
+        return {"transactions": cleaned, "ai_used": ai_used, "note": note}
 
     @router.post("/confirm-import")
     async def confirm_import(body: ConfirmImportInput, user=Depends(get_current_user)):

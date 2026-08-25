@@ -30,15 +30,18 @@ export default function StatementUpload({ onImported, source = 'bank' }) {
   const [error, setError] = useState('');
   const [imported, setImported] = useState(0);
   const [step, setStep] = useState('choose'); // choose -> map (csv) -> review -> done
+  const [aiReviewed, setAiReviewed] = useState(false);
+  const [aiNote, setAiNote] = useState('');
 
   const reset = () => {
     setFile(null); setPreview(null); setMapping({}); setParsed([]); setError('');
-    setImported(0); setStep('choose');
+    setImported(0); setStep('choose'); setAiReviewed(false); setAiNote('');
   };
 
   const handleFile = async (f) => {
     if (!f) return;
     setError(''); setBusy(true); setFile(f);
+    setAiReviewed(false); setAiNote('');
     try {
       const form = new FormData();
       form.append('file', f);
@@ -49,8 +52,21 @@ export default function StatementUpload({ onImported, source = 'bank' }) {
         setMapping(data.guess || {});
         setStep('map');
       } else {
-        // PDF: server already extracted transactions
-        setParsed(data.transactions || []);
+        // PDF: server already extracted transactions — run AI review before Review step
+        const rawTxns = data.transactions || [];
+        if (rawTxns.length) {
+          try {
+            const { data: reviewed } = await api.post('/statements/ai-review',
+              { transactions: rawTxns, source });
+            setParsed(reviewed.transactions || rawTxns);
+            setAiReviewed(!!reviewed.ai_used);
+            setAiNote(reviewed.note || '');
+          } catch {
+            setParsed(rawTxns);
+          }
+        } else {
+          setParsed(rawTxns);
+        }
         setStep('review');
       }
     } catch (err) {
@@ -59,14 +75,29 @@ export default function StatementUpload({ onImported, source = 'bank' }) {
   };
 
   const runParse = async () => {
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setAiReviewed(false); setAiNote('');
     try {
       const form = new FormData();
       form.append('file', file);
       form.append('mapping', JSON.stringify(mapping));
       form.append('source', source);
       const { data } = await api.post('/statements/parse', form);
-      setParsed(data.transactions || []);
+      const rawTxns = data.transactions || [];
+      // Second pass: ask FINAURA AI to auto-categorize + sanity-check every row
+      // so the user doesn't have to hand-tag Food/Shopping/etc.
+      if (rawTxns.length) {
+        try {
+          const { data: reviewed } = await api.post('/statements/ai-review',
+            { transactions: rawTxns, source });
+          setParsed(reviewed.transactions || rawTxns);
+          setAiReviewed(!!reviewed.ai_used);
+          setAiNote(reviewed.note || '');
+        } catch {
+          setParsed(rawTxns);
+        }
+      } else {
+        setParsed(rawTxns);
+      }
       setStep('review');
     } catch (err) {
       setError(err?.response?.data?.detail || 'Could not extract transactions.');
@@ -86,8 +117,26 @@ export default function StatementUpload({ onImported, source = 'bank' }) {
     } finally { setBusy(false); }
   };
 
-  const updateTxn = (idx, patch) => setParsed((prev) => prev.map((t, i) => (i === idx ? { ...t, ...patch } : t)));
+  const updateTxn = (idx, patch) => setParsed((prev) => prev.map((t, i) => {
+    if (i !== idx) return t;
+    const next = { ...t, ...patch };
+    // Keep Type ↔ Category in sync so an Expense row never displays a category of 'Income'.
+    if (patch.type && patch.type !== t.type) {
+      if (patch.type === 'Expense' && ['Income', 'Miscellaneous Credit'].includes(next.category)) {
+        next.category = 'Miscellaneous Debit';
+      } else if (patch.type === 'Income' && !['Income', 'Miscellaneous Credit', 'Internal Transfer'].includes(next.category)) {
+        next.category = 'Income';
+      }
+    }
+    return next;
+  }));
   const removeTxn = (idx) => setParsed((prev) => prev.filter((_, i) => i !== idx));
+
+  // Category options are filtered by Type so 'Expense + Income' can never be selected.
+  const CAT_ALL = ['Income','Food','Shopping','Transport','Rent','Bills','Education','Entertainment','Healthcare','Other','Miscellaneous Credit','Miscellaneous Debit','Internal Transfer'];
+  const catsFor = (type) => type === 'Income'
+    ? ['Income', 'Miscellaneous Credit', 'Internal Transfer']
+    : ['Food','Shopping','Transport','Rent','Bills','Education','Entertainment','Healthcare','Other','Miscellaneous Debit','Internal Transfer'];
 
   const MAPPING_FIELDS = source === 'upi' ? [...BASE_MAPPING_FIELDS, ...UPI_EXTRA_FIELDS] : BASE_MAPPING_FIELDS;
   return (
@@ -150,7 +199,10 @@ export default function StatementUpload({ onImported, source = 'bank' }) {
             <span>1. Map columns</span> <ChevronRight size={14} /> <span className="active">2. Review</span> <ChevronRight size={14} /> <span>3. Import</span>
           </div>
           <p style={{ fontSize: 13, color: '#556b60' }}>
-            {parsed.length} transaction{parsed.length === 1 ? '' : 's'} found. Correct anything FINAURA AI got wrong before importing.
+            {parsed.length} transaction{parsed.length === 1 ? '' : 's'} found.
+            {aiReviewed
+              ? <> <span data-testid="ai-reviewed-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 999, background: '#e5f8ef', color: '#087f56', fontSize: 11, fontWeight: 600, marginLeft: 6 }}><Check size={11} /> AI-reviewed</span> Categories and types were double-checked by FINAURA AI. Correct anything before importing.</>
+              : <> Correct anything FINAURA AI got wrong before importing.</>}
             {preview?.kind === 'pdf' && <> PDF extraction is best-effort — always double-check.</>}
           </p>
           <div className="table-wrap">
@@ -163,13 +215,13 @@ export default function StatementUpload({ onImported, source = 'bank' }) {
                     <td>{t.date}</td>
                     <td><input value={t.description} onChange={(e) => updateTxn(i, { description: e.target.value })} style={{ border: '1px solid #e2e8f0', padding: '4px 6px', borderRadius: 4, fontSize: 12, width: '100%' }} /></td>
                     <td>
-                      <select value={t.type} onChange={(e) => updateTxn(i, { type: e.target.value })}>
+                      <select value={t.type} onChange={(e) => updateTxn(i, { type: e.target.value })} data-testid={`review-type-${i}`}>
                         <option>Expense</option><option>Income</option>
                       </select>
                     </td>
                     <td>
-                      <select value={t.category} onChange={(e) => updateTxn(i, { category: e.target.value })}>
-                        {['Income','Food','Shopping','Transport','Rent','Bills','Education','Entertainment','Healthcare','Other'].map((c) => <option key={c}>{c}</option>)}
+                      <select value={CAT_ALL.includes(t.category) ? t.category : (t.type === 'Income' ? 'Income' : 'Miscellaneous Debit')} onChange={(e) => updateTxn(i, { category: e.target.value })} data-testid={`review-category-${i}`}>
+                        {catsFor(t.type).map((c) => <option key={c}>{c}</option>)}
                       </select>
                     </td>
                     <td className={t.type === 'Income' ? 'amount-income' : ''}>{t.type === 'Income' ? '+' : '−'}{money(t.amount)}</td>
