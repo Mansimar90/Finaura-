@@ -605,19 +605,33 @@ def parse_pdf(content: bytes, source: str = "bank") -> tuple[list[dict], str, di
                         yv = ym.group(1)
                         stmt_year = int(yv) if len(yv) == 4 else 2000 + int(yv)
                         break
-                # Regex for a Paytm record header line — starts with "DD Mon"
-                # and ends with a signed rupee amount. Use anchored fragments so we
-                # can strip the prefix and suffix but keep the middle description.
-                REC_DATE_PREFIX = re.compile(r"^(\d{1,2})\s+([A-Za-z]{3,9})\b\s*")
-                REC_AMT_SUFFIX = re.compile(r"([+-])\s*(?:Rs\.?|₹|INR)\s*([\d,]+(?:\.\d{1,2})?)\s*$")
+                # Regexes for the record header line — one per UPI-app family. Each
+                # returns (day, mon, year_or_None, description_fragment, amount, direction).
+                # direction is 'debit' | 'credit' | None (None = infer from context lines).
+                # -- Paytm: "23 Aug ... [+-] Rs.NN"
+                PAT_PAYTM = re.compile(
+                    r"^(?P<day>\d{1,2})\s+(?P<mon>[A-Za-z]{3,9})\b(?P<mid>.*?)"
+                    r"(?P<sign>[+-])\s*(?:Rs\.?|₹|INR)\s*(?P<amt>[\d,]+(?:\.\d{1,2})?)\s*$",
+                )
+                # -- PhonePe: "Feb 28, 2026 ... Debit INR 295.83"
+                PAT_PHONEPE = re.compile(
+                    r"^(?P<mon>[A-Za-z]{3,9})\s+(?P<day>\d{1,2}),?\s*(?P<year>\d{2,4})\s+"
+                    r"(?P<mid>.+?)\s+(?P<dir>Debit|Credit)\s+"
+                    r"(?:INR|Rs\.?|₹)\s*(?P<amt>[\d,]+(?:\.\d{1,2})?)\s*$",
+                )
+                # -- GPay: "02Feb,2026 Paidto... ₹130" (dates + words joined, no spaces)
+                PAT_GPAY = re.compile(
+                    r"^(?P<day>\d{1,2})(?P<mon>[A-Za-z]{3,9}),?\s*(?P<year>\d{2,4})\s+"
+                    r"(?P<mid>.+?)\s+₹\s*(?P<amt>[\d,]+(?:\.\d{1,2})?)\s*$",
+                )
+
                 def _match_rec(s: str):
-                    dp = REC_DATE_PREFIX.match(s)
-                    if not dp:
-                        return None
-                    ap = REC_AMT_SUFFIX.search(s)
-                    if not ap:
-                        return None
-                    return (dp, ap)
+                    """Return (kind, groups_dict) or None. Tries each UPI-app pattern."""
+                    for kind, pat in (("paytm", PAT_PAYTM), ("phonepe", PAT_PHONEPE), ("gpay", PAT_GPAY)):
+                        m = pat.match(s)
+                        if m:
+                            return (kind, m.groupdict())
+                    return None
                 current: list[str] = []
                 records: list[list[str]] = []
                 def _flush():
@@ -635,90 +649,131 @@ def parse_pdf(content: bytes, source: str = "bank") -> tuple[list[dict], str, di
                 UPI_ID_RE = re.compile(r"UPI\s*ID\s*:?\s*([\w.\-]+@[\w\-]+)", re.IGNORECASE)
                 BANK_REF_RE = re.compile(r"Bank\s*Ref\s*No\.?\s*:?\s*(\d{6,22})", re.IGNORECASE)
                 ORDER_ID_RE = re.compile(r"Order\s*ID\s*:?\s*(\d{6,22})", re.IGNORECASE)
+                UTR_RE = re.compile(r"UTR\s*No\.?\s*:?\s*(\d{6,22})", re.IGNORECASE)
+                TXN_ID_RE = re.compile(r"Transaction\s*ID\s*:?\s*([A-Z0-9]{6,40})", re.IGNORECASE)
+                GPAY_TXN_ID_RE = re.compile(r"UPITransactionID:?\s*(\d{6,22})", re.IGNORECASE)
+                MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
                 for rec in records:
                     header = rec[0]
                     parts = _match_rec(header)
                     if not parts:
                         continue
-                    dp, ap = parts
-                    day, mon = dp.group(1), dp.group(2)
-                    sign, amt_str = ap.group(1), ap.group(2)
+                    kind, g = parts
+                    day = g["day"]
+                    mon = g["mon"]
+                    year_str = g.get("year")
+                    amt_str = g["amt"]
                     amount = normalize_amount(amt_str)
                     if amount <= 0:
                         continue
                     header_low = header.lower()
-                    # Skip statement summary / total-money lines (they carry a Rs. amount
-                    # like the real records but describe aggregate totals, not one txn).
+                    # Skip statement summary / total-money lines
                     if any(k in header_low for k in (
                         "payment received", "payment made", "payments received",
                         "payments made", "total money", "money paid", "money received",
                         "grand total", "opening balance", "closing balance",
+                        "transaction statement", "statement period",
                     )):
                         continue
-                    # Reject headers that carry a date RANGE (e.g. "25 FEB'26 - 24 AUG'26")
-                    # — those are the statement period, not a transaction.
-                    if len(re.findall(r"[A-Za-z]{3,9}\W?'?\d{2,4}", header)) >= 2:
+                    # Reject headers that carry a real DATE RANGE (like "25 FEB'26 - 24 AUG'26").
+                    # Require either an apostrophe-year (`'26`) or a full 4-digit year to count,
+                    # so "INR 295" doesn't get mistaken for a second date on PhonePe lines.
+                    date_hits = len(re.findall(r"[A-Za-z]{3,9}\s*['\u2019]\d{2}\b", header))
+                    date_hits += len(re.findall(r"[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}\b", header))
+                    if date_hits >= 2:
                         continue
-                    # Reject if description contains 2+ Rs. amounts (summary row)
                     if len(re.findall(r"Rs\.?", header)) >= 2:
                         continue
-                    # Direction: '+' = money in (Income), '-' = money out (Expense)
-                    txn_type = "Income" if sign == "+" else "Expense"
-                    # Description: strip the leading date and trailing amount from header,
-                    # append merchant / counterparty hints from context lines.
-                    header_desc = REC_AMT_SUFFIX.sub("", REC_DATE_PREFIX.sub("", header)).strip()
-                    # Trim the phrase like "Automatic payment of ₹1649 setup for" — keep merchant
+                    # Direction — format-specific
+                    txn_type = "Expense"
+                    if kind == "paytm":
+                        txn_type = "Income" if g["sign"] == "+" else "Expense"
+                    elif kind == "phonepe":
+                        txn_type = "Income" if (g.get("dir") or "").lower() == "credit" else "Expense"
+                    elif kind == "gpay":
+                        # Direction from following lines: "Paidby<Bank>" = user debit,
+                        # "Paidto<Bank>" = user credited (they RECEIVED to their bank).
+                        # Also the header itself often says "Paidto<Merchant>" (debit)
+                        # vs "Receivedfrom<Person>" (credit).
+                        head_no_space = header.replace(" ", "").lower()
+                        ctx_no_space = "".join(rec[1:4]).replace(" ", "").lower()
+                        if "receivedfrom" in head_no_space or "paidto" in ctx_no_space and "paidtojammu" in ctx_no_space and "receivedfrom" not in head_no_space:
+                            # header says received OR context bank direction says user got money
+                            txn_type = "Income" if "receivedfrom" in head_no_space else "Expense"
+                        elif "paidto" in head_no_space or "paidby" in ctx_no_space:
+                            txn_type = "Expense"
+                        elif "receivedfrom" in head_no_space:
+                            txn_type = "Income"
+                    # Extract description fragment (middle part of the header)
+                    header_desc = (g.get("mid") or "").strip()
                     ctx_text = " ".join(rec[1:6])
-                    upi_ref_m = UPI_REF_RE.search(ctx_text) or BANK_REF_RE.search(ctx_text)
+                    upi_ref_m = (UPI_REF_RE.search(ctx_text) or BANK_REF_RE.search(ctx_text)
+                                 or UTR_RE.search(ctx_text) or GPAY_TXN_ID_RE.search(ctx_text))
                     upi_id_m = UPI_ID_RE.search(ctx_text)
                     order_m = ORDER_ID_RE.search(ctx_text)
-                    # Merchant heuristic: description often starts with 'Paid to X' /
-                    # 'Received from X' / 'Money sent to X' — extract X (stop at UPI/Tag/Note/Bank).
+                    txn_id_m = TXN_ID_RE.search(ctx_text)
+                    # Merchant heuristic — format-specific
                     merchant = None
-                    for phrase in ("Paid to ", "Received from ", "Money sent to ", "Sent to "):
-                        if phrase in header_desc:
-                            m2 = header_desc.split(phrase, 1)[1]
-                            m2 = re.split(r"\s+(?:Note|Tag|UPI|Bank|Order|Ref)\s*:", m2, maxsplit=1)[0]
-                            m2 = re.sub(r"\s+Bank\s+Of\b.*$", "", m2, flags=re.IGNORECASE)
-                            m2 = m2.strip(" -\t")
-                            if m2:
-                                merchant = m2
-                            break
+                    if kind == "gpay":
+                        # GPay: header is like "PaidtoZOMATOLIMITED" or "ReceivedfromROHIT"
+                        for phrase in ("Paidto", "Receivedfrom", "Paidby"):
+                            if phrase in header_desc.replace(" ", ""):
+                                # Reconstruct from original header without spaces
+                                joined = header_desc.replace(" ", "")
+                                part = joined.split(phrase, 1)[1]
+                                # Insert spaces before capital letters and digits (best-effort)
+                                spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", part)
+                                spaced = re.sub(r"([A-Za-z])(\d)", r"\1 \2", spaced)
+                                merchant = spaced.strip()
+                                break
+                    else:
+                        for phrase in ("Paid to ", "Received from ", "Money sent to ", "Sent to "):
+                            if phrase in header_desc:
+                                m2 = header_desc.split(phrase, 1)[1]
+                                m2 = re.split(r"\s+(?:Note|Tag|UPI|Bank|Order|Ref)\s*:", m2, maxsplit=1)[0]
+                                m2 = re.sub(r"\s+Bank\s+Of\b.*$", "", m2, flags=re.IGNORECASE)
+                                m2 = m2.strip(" -\t")
+                                if m2:
+                                    merchant = m2
+                                break
                     if not merchant:
-                        # Fallback: first "content" line after the header often holds the
-                        # wrapped merchant name (before mixed Notes / Account column bleed).
                         for cont in rec[1:5]:
-                            if any(kw in cont for kw in ("UPI ID:", "UPI Ref", "Tag:", "Note:", "Bank Ref", "Order ID", "Page ")):
+                            if any(kw in cont for kw in ("UPI ID:", "UPI Ref", "Tag:", "Note:", "Bank Ref", "Order ID", "Page ", "Transaction ID", "UTR No", "Debited from", "Credited to")):
                                 continue
                             low_c = cont.strip().lower()
                             if low_c in ("time", "amount", "date"):
                                 continue
                             if re.match(r"^\d{1,2}[:.]\d{2}\s*(?:AM|PM|am|pm)?\s*$", cont):
-                                continue  # time-only line
-                            # UPI-ID-only fragment (e.g. "4s8sr@paytm on") — skip
+                                continue
                             if re.match(r"^[\w.\-]+@[\w\-]+(\s+on)?\s*$", cont, re.IGNORECASE):
                                 continue
-                            # Trim trailing column bleed (Notes/Bank columns)
                             cleaned = re.sub(r"\s+Bank\s+Of\b.*$", "", cont, flags=re.IGNORECASE)
                             cleaned = re.sub(r"\s+Baroda\b.*$", "", cleaned, flags=re.IGNORECASE)
                             cleaned = re.sub(r"\s+Razorpay\b.*$", "", cleaned, flags=re.IGNORECASE)
-                            cleaned = re.sub(r"\s+#\s*\w+.*$", "", cleaned)  # trim '# Food' tag column
-                            cleaned = re.sub(r"\s+on\s*$", "", cleaned)  # trailing "on"
+                            cleaned = re.sub(r"\s+#\s*\w+.*$", "", cleaned)
+                            cleaned = re.sub(r"\s+on\s*$", "", cleaned)
                             cleaned = cleaned.strip(" -\t")
                             if cleaned and len(cleaned) >= 3 and not cleaned.lower().startswith("upi"):
                                 merchant = cleaned
                                 break
-                    # Prefer merchant when header_desc is generic ("Automatic payment of ...")
-                    if merchant and re.search(r"automatic payment|setup for|scheduled|standing instruction", (header_desc or "").lower()):
+                    # Clean the description output
+                    if merchant and re.search(r"automatic payment|setup for|scheduled|standing instruction", header_desc.lower()):
                         desc_out = merchant
                     else:
-                        # Clean up header_desc — drop Notes/Tag/Bank column bleed markers
                         cleaned_hd = re.sub(r"\s*(?:Note|Tag)\s*:.*$", "", header_desc)
                         cleaned_hd = re.sub(r"\s+Bank\s+Of\b.*$", "", cleaned_hd, flags=re.IGNORECASE)
                         cleaned_hd = cleaned_hd.strip(" -\t#")
+                        # For GPay, insert spaces into camelCase-glued fragments
+                        if kind == "gpay":
+                            cleaned_hd = re.sub(r"([a-z])([A-Z])", r"\1 \2", cleaned_hd)
+                            cleaned_hd = re.sub(r"([A-Za-z])(\d)", r"\1 \2", cleaned_hd)
                         desc_out = cleaned_hd or merchant or "UPI payment"
-                    # Normalise date
-                    year = stmt_year or datetime.now(timezone.utc).year
+                    # Normalise date — use explicit year from PhonePe/GPay when present,
+                    # otherwise fall back to the statement-period year.
+                    if year_str:
+                        year = int(year_str) if len(year_str) == 4 else 2000 + int(year_str)
+                    else:
+                        year = stmt_year or datetime.now(timezone.utc).year
                     try:
                         date_norm = datetime.strptime(f"{day} {mon} {year}", "%d %b %Y").strftime("%d %b %Y")
                     except ValueError:
@@ -748,6 +803,15 @@ def parse_pdf(content: bytes, source: str = "bank") -> tuple[list[dict], str, di
                             txn["upi_app"] = app_key
                     if order_m:
                         txn["txn_id"] = order_m.group(1)
+                    elif txn_id_m:
+                        txn["txn_id"] = txn_id_m.group(1)
+                    # Tag the source app so cross-verify has a hint
+                    if kind == "phonepe":
+                        txn.setdefault("upi_app", "phonepe")
+                    elif kind == "gpay":
+                        txn.setdefault("upi_app", "gpay")
+                    elif kind == "paytm":
+                        txn.setdefault("upi_app", "paytm")
                     transactions.append(txn)
                 if transactions:
                     meta["text_fallback_used"] = True
