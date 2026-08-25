@@ -325,7 +325,7 @@ def excel_preview(content: bytes, source: str = "bank") -> dict:
     }
 
 
-# -------- PDF parsing (best effort text pattern extraction) --------
+# -------- PDF parsing (table-first, text-fallback) --------
 
 DATE_PATTERNS = [
     r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b",
@@ -338,72 +338,292 @@ AMOUNT_PATTERN = r"([₹]?\s?[+-]?\s?\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|[₹]?\s
 DEBIT_RE = re.compile(r"\b(dr|debit|withdrawal|withdraw)\b", re.IGNORECASE)
 CREDIT_RE = re.compile(r"\b(cr|credit|deposit)\b", re.IGNORECASE)
 
+# Lines / rows containing any of these are almost always account-summary noise
+# (credit limit, opening balance, statement period, card number, page-N-of-M, etc.)
+# — NOT actual transactions.
+NON_TXN_HINTS = (
+    "credit limit", "available limit", "cash limit", "total due", "minimum due",
+    "opening balance", "closing balance", "available balance", "book balance",
+    "statement period", "statement date", "statement summary", "account summary",
+    "card number", "customer id", "ifsc", "micr", "branch code",
+    "page ", "generated on", "printed on", "as on", "valid till", "due date",
+    "cheque book", "statement of account", "reward points", "gst", "vat",
+    "interest paid", "opening", "carried forward", "brought forward",
+    "grand total", "sub total", "total credits", "total debits",
+)
+
+
+def _row_looks_like_txn(row_txt: str) -> bool:
+    low = (row_txt or "").lower()
+    if len(row_txt) < 8:
+        return False
+    if any(h in low for h in NON_TXN_HINTS):
+        return False
+    # Must contain at least one digit sequence >= 2 digits (an amount)
+    if not re.search(r"\d{2,}", row_txt):
+        return False
+    return True
+
+
+def _pick_amount(cells: list[str]) -> tuple[float, str | None]:
+    """Given a table row's cells, find the transaction amount.
+    Return (amount, hint) where hint is 'debit', 'credit', or None."""
+    numeric = []
+    for i, c in enumerate(cells):
+        v = normalize_amount(c)
+        if v > 0:
+            numeric.append((i, v, c))
+    if not numeric:
+        return 0.0, None
+    # Heuristic: bank statements typically place Debit / Credit / Balance in the
+    # last 2-3 columns. The BALANCE (largest, monotonic) is usually the last one
+    # → drop it. What remains is the actual movement.
+    # If there are exactly 2+ numeric cells, drop the LAST (running balance).
+    if len(numeric) >= 2:
+        # last one is balance
+        numeric = numeric[:-1]
+    # The remaining non-zero cell is the movement.
+    i, amt, raw = numeric[-1]
+    # Detect debit vs credit by header proximity — caller passes cell index; here we
+    # just try to infer from whether the row also carries CR/DR tokens.
+    return amt, None
+
+
+def _extract_tables(pdf) -> list[list[list[str]]]:
+    tables: list[list[list[str]]] = []
+    for page in pdf.pages:
+        try:
+            found = page.extract_tables() or []
+        except Exception:
+            found = []
+        for tbl in found:
+            if tbl and len(tbl) >= 2:
+                tables.append(tbl)
+    return tables
+
+
+def _classify_columns(header: list[str]) -> dict:
+    """Map a table header row to column indices we care about."""
+    if not header:
+        return {}
+    idx: dict[str, int] = {}
+    for i, cell in enumerate(header or []):
+        h = (cell or "").strip().lower()
+        if not h:
+            continue
+        if "date" in h and "date" not in idx:
+            idx["date"] = i
+        if any(k in h for k in ("narration", "particulars", "description", "details", "remarks", "transaction")) and "desc" not in idx:
+            idx["desc"] = i
+        if any(k in h for k in ("withdrawal", "debit", "dr amount", "paid out", "amount debit")) and "debit" not in idx:
+            idx["debit"] = i
+        if any(k in h for k in ("deposit", "credit", "cr amount", "paid in", "amount credit")) and "credit" not in idx:
+            idx["credit"] = i
+        if h == "amount" or h.endswith(" amount") or h.startswith("amount"):
+            if "amount" not in idx:
+                idx["amount"] = i
+        if "balance" in h and "balance" not in idx:
+            idx["balance"] = i
+        if any(k in h for k in ("type", "cr/dr", "dr/cr")) and "type" not in idx:
+            idx["type"] = i
+    return idx
+
+
 def parse_pdf(content: bytes, source: str = "bank") -> tuple[list[dict], str]:
     try:
         import pdfplumber
     except ImportError as exc:
         raise HTTPException(status_code=503, detail="PDF parser not available on this server.") from exc
-    lines: list[str] = []
+    transactions: list[dict] = []
+    sample_snippet = ""
     try:
         with pdfplumber.open(io.BytesIO(content)) as pdf:
+            # --- Strategy 1: proper table extraction ---
             for page in pdf.pages:
-                text = page.extract_text() or ""
-                lines.extend([ln.strip() for ln in text.splitlines() if ln.strip()])
+                try:
+                    tables = page.extract_tables() or []
+                except Exception:
+                    tables = []
+                for tbl in tables:
+                    if not tbl or len(tbl) < 2:
+                        continue
+                    # First row is usually the header. Find one that has a Date-ish
+                    # column so we're not mining a summary table.
+                    header_i = 0
+                    col_idx = _classify_columns(tbl[0])
+                    if "date" not in col_idx:
+                        # Try second row as header (some PDFs stack a title above)
+                        col_idx = _classify_columns(tbl[1]) if len(tbl) > 1 else {}
+                        if "date" not in col_idx:
+                            continue
+                        header_i = 1
+                    for raw_row in tbl[header_i + 1 :]:
+                        row = [(c or "").strip() for c in raw_row]
+                        row_text = " | ".join(row)
+                        if not _row_looks_like_txn(row_text):
+                            continue
+                        date_cell = row[col_idx["date"]] if col_idx.get("date") is not None and col_idx["date"] < len(row) else ""
+                        # Grab first plausible date from the cell
+                        date_match = None
+                        for pat in DATE_PATTERNS:
+                            m = re.search(pat, date_cell)
+                            if m:
+                                date_match = m
+                                break
+                        if not date_match:
+                            continue
+                        desc_cell = row[col_idx["desc"]] if col_idx.get("desc") is not None and col_idx["desc"] < len(row) else ""
+                        desc = re.sub(r"\s+", " ", desc_cell).strip()
+                        if not desc:
+                            # Fallback: join all non-date/non-amount cells
+                            skip_cols = {col_idx.get("date"), col_idx.get("debit"), col_idx.get("credit"),
+                                         col_idx.get("amount"), col_idx.get("balance"), col_idx.get("type")}
+                            desc = " ".join(c for i, c in enumerate(row) if i not in skip_cols and c).strip()
+                        if not desc:
+                            continue
+                        # Determine amount + direction from the debit/credit split when available,
+                        # otherwise fall back to a single Amount column.
+                        amount = 0.0
+                        hint = None
+                        if col_idx.get("debit") is not None or col_idx.get("credit") is not None:
+                            dr = normalize_amount(row[col_idx["debit"]]) if col_idx.get("debit") is not None and col_idx["debit"] < len(row) else 0
+                            cr = normalize_amount(row[col_idx["credit"]]) if col_idx.get("credit") is not None and col_idx["credit"] < len(row) else 0
+                            if cr and (not dr or cr >= dr):
+                                amount, hint = cr, "credit"
+                            elif dr:
+                                amount, hint = dr, "debit"
+                        elif col_idx.get("amount") is not None and col_idx["amount"] < len(row):
+                            amount = normalize_amount(row[col_idx["amount"]])
+                            if col_idx.get("type") is not None and col_idx["type"] < len(row):
+                                type_cell = (row[col_idx["type"]] or "").lower()
+                                if "cr" in type_cell or "credit" in type_cell or "received" in type_cell:
+                                    hint = "credit"
+                                elif "dr" in type_cell or "debit" in type_cell or "sent" in type_cell:
+                                    hint = "debit"
+                        else:
+                            amt, _ = _pick_amount(row)
+                            amount = amt
+                        if amount <= 0:
+                            continue
+                        # Word-boundary CR/DR scan across the whole row (as extra hint)
+                        if not hint:
+                            if CREDIT_RE.search(row_text):
+                                hint = "credit"
+                            elif DEBIT_RE.search(row_text):
+                                hint = "debit"
+                        txn_type, absolute_amount = _detect_type(amount, hint)
+                        if absolute_amount <= 0:
+                            continue
+                        # Trim any trailing DR/CR markers still in the description
+                        desc = CREDIT_RE.sub("", desc)
+                        desc = DEBIT_RE.sub("", desc)
+                        desc = re.sub(r"\s+", " ", desc).strip(" -\t|")
+                        if not desc or len(desc) < 3:
+                            continue
+                        txn_type, category = resolve_type_and_category(desc, txn_type, None)
+                        txn = {
+                            "id": str(uuid.uuid4()),
+                            "date": normalize_date(date_match.group(1)),
+                            "description": desc[:120],
+                            "amount": round(absolute_amount, 2),
+                            "type": txn_type,
+                            "category": category,
+                            "source": source,
+                        }
+                        if source == "upi":
+                            upi_meta = extract_upi_meta(desc)
+                            txn.update({k: v for k, v in upi_meta.items() if v})
+                            app_key = detect_upi_app(desc)
+                            if app_key:
+                                txn["upi_app"] = app_key
+                        transactions.append(txn)
+            # Capture a sample for the UI even if tables found rows
+            for page in pdf.pages[:1]:
+                try:
+                    t = page.extract_text() or ""
+                    sample_snippet = "\n".join([ln for ln in t.splitlines() if ln.strip()][:6])
+                    break
+                except Exception:
+                    pass
+
+            # --- Strategy 2: text fallback (only if tables gave us NOTHING useful) ---
+            if not transactions:
+                lines: list[str] = []
+                for page in pdf.pages:
+                    text = page.extract_text() or ""
+                    lines.extend([ln.strip() for ln in text.splitlines() if ln.strip()])
+                for line in lines:
+                    if not _row_looks_like_txn(line):
+                        continue
+                    date_match = None
+                    for pat in DATE_PATTERNS:
+                        m = re.search(pat, line)
+                        if m:
+                            date_match = m
+                            break
+                    if not date_match:
+                        continue
+                    remainder = line[date_match.end():].strip()
+                    amounts = re.findall(AMOUNT_PATTERN, remainder)
+                    amounts = [a for a in amounts if any(c.isdigit() for c in a) and normalize_amount(a) > 0]
+                    if not amounts:
+                        continue
+                    # If there are 2+ amounts on the line, treat the LAST as running balance and
+                    # the PREVIOUS as the txn amount. (Statements almost always print Balance last.)
+                    txn_amount_str = amounts[-2] if len(amounts) >= 2 else amounts[-1]
+                    amount_value = normalize_amount(txn_amount_str)
+                    if amount_value <= 0:
+                        continue
+                    desc = remainder
+                    for a in amounts:
+                        desc = desc.replace(a, "")
+                    hint = None
+                    if CREDIT_RE.search(line):
+                        hint = "credit"
+                    elif DEBIT_RE.search(line):
+                        hint = "debit"
+                    desc = CREDIT_RE.sub("", desc)
+                    desc = DEBIT_RE.sub("", desc)
+                    desc = re.sub(r"\s+", " ", desc).strip(" -\t|")
+                    if not desc or len(desc) < 3:
+                        continue
+                    txn_type, absolute_amount = _detect_type(amount_value, hint)
+                    if absolute_amount <= 0:
+                        continue
+                    txn_type, category = resolve_type_and_category(desc, txn_type, None)
+                    txn = {
+                        "id": str(uuid.uuid4()),
+                        "date": normalize_date(date_match.group(1)),
+                        "description": desc[:120],
+                        "amount": round(absolute_amount, 2),
+                        "type": txn_type,
+                        "category": category,
+                        "source": source,
+                    }
+                    if source == "upi":
+                        upi_meta = extract_upi_meta(desc)
+                        txn.update({k: v for k, v in upi_meta.items() if v})
+                        app_key = detect_upi_app(desc)
+                        if app_key:
+                            txn["upi_app"] = app_key
+                    transactions.append(txn)
+                if lines and not sample_snippet:
+                    sample_snippet = "\n".join(lines[:6])
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Couldn't read this PDF: {exc}") from exc
-    transactions: list[dict] = []
-    for line in lines:
-        date_match = None
-        for pat in DATE_PATTERNS:
-            m = re.search(pat, line)
-            if m:
-                date_match = m
-                break
-        if not date_match:
+
+    # De-duplicate exact repeats (page footers can print the same row twice)
+    seen: set = set()
+    unique: list[dict] = []
+    for t in transactions:
+        k = (t.get("date"), round(float(t.get("amount", 0)), 2), t.get("description", "")[:60])
+        if k in seen:
             continue
-        remainder = line[date_match.end():].strip()
-        amounts = re.findall(AMOUNT_PATTERN, remainder)
-        amounts = [a for a in amounts if any(c.isdigit() for c in a)]
-        if not amounts:
-            continue
-        raw_amount = amounts[-1]
-        amount_value = normalize_amount(raw_amount)
-        desc = remainder
-        for a in amounts:
-            desc = desc.replace(a, "")
-        # word-boundary DR/CR detection anywhere in the line (including end)
-        hint = None
-        if CREDIT_RE.search(line):
-            hint = "credit"
-        elif DEBIT_RE.search(line):
-            hint = "debit"
-        # strip the DR/CR token(s) from the description
-        desc = CREDIT_RE.sub("", desc)
-        desc = DEBIT_RE.sub("", desc)
-        desc = re.sub(r"\s+", " ", desc).strip(" -\t")
-        if not desc:
-            continue
-        txn_type, absolute_amount = _detect_type(amount_value, hint)
-        if absolute_amount <= 0:
-            continue
-        txn_type, category = resolve_type_and_category(desc, txn_type, None)
-        txn = {
-            "id": str(uuid.uuid4()),
-            "date": normalize_date(date_match.group(1)),
-            "description": desc[:120],
-            "amount": round(absolute_amount, 2),
-            "type": txn_type,
-            "category": category,
-            "source": source,
-        }
-        if source == "upi":
-            upi_meta = extract_upi_meta(desc)
-            txn.update({k: v for k, v in upi_meta.items() if v})
-            app_key = detect_upi_app(desc)
-            if app_key:
-                txn["upi_app"] = app_key
-        transactions.append(txn)
-    return transactions, "\n".join(lines[:6])
+        seen.add(k)
+        unique.append(t)
+    return unique, sample_snippet
 
 
 # -------- FastAPI router --------
