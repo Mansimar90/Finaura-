@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 15 — backend-only verification of the cross-source double-count fix (dedupe_across_sources) and the hardened /statements/resolve-duplicate. Ran 80 backend tests total: new suite /app/backend/tests/test_iteration15_dedupe.py (19 cases, 18 PASS / 1 FAIL) + existing tests/test_iteration14_upi.py (23/23 PASS after updating one stale assertion 400→422) + tests/test_iteration13.py and tests/test_finaura_regression.py (61 passed / 5 skipped for the combined run). CONFIRMED FIXED: the HIGH-priority double-count bug — UPI 'TEST15_Gym Pro' 1500 on 12 Aug 2026 + bank 'UPI/TEST15_Gym Pro/<ref>' 1500 on 11 Aug 2026 now appears as ONE row (source=upi) in /api/financial/overview, the spending donut counts ₹1,500 (identical to the bank-row-only baseline, verified by re-measuring the 'Other' bucket), and /api/statements/verify still reports it under verified_matches with score >= 0.85. Exact-date pairs still dedupe. Bank-only data is an exact no-op (3 bank rows incl. two identical ₹111 rows all preserved — the old intra-source dedupe bug is gone). Non-matching pairs (amount mismatch / type mismatch / >3-day gap) are BOTH kept. /statements/verify no longer leaks matched_bank_ids and no bank_txn/upi_txn/upi_only/bank_only object contains _id, user_id, created_at or verified_at; counts/months intact. /statements/resolve-duplicate: 422 for missing keep_id, missing drop_id and empty body; 400 for keep_id == drop_id; 404 when EITHER id is bogus (verified the valid side is NOT deleted on a 404 — the old data-loss path is fixed); 200 happy path deletes the bank side, tags the survivor verified=true and /financial/overview then shows exactly one row. /auth/me still exposes picture, /auth/google/start still 302 to accounts.google.com, statements preview/parse/confirm-import for both bank and upi sources still pass, goals (priority/reorder/CRUD), whatif, twin, settings and learn regressions all pass. ONE NEW ISSUE FOUND: dedupe_across_sources drops bank rows for 'possible' matches too (score 0.6–0.85), so two unrelated same-amount transactions 2 days apart silently vanish from analytics.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/financial/overview", "issue": "OVER-dedupe regression introduced by the fix: dedupe_across_sources() drops every bank id in cross_verify()'s matched_bank_ids, but that set also contains POSSIBLE matches (0.6 <= score < 0.85), not just verified ones. Reproduced: bank 'TEST15_Zzz Alpha' ₹1234 on 10 Aug (no upi ref, no token overlap) + UPI 'TEST15_Qqq Beta' ₹1234 on 12 Aug → /verify correctly classifies it as a POSSIBLE match (score 0.75), yet /financial/overview silently deletes the bank row from transactions[] and the spending donut, under-reporting ₹1,234. Two genuinely different payments of the same amount within 3 days are enough to trigger it. Fix: have cross_verify return verified_bank_ids separately (or filter matched_bank_ids to score >= 0.85 inside dedupe_across_sources) and dedupe only confirmed matches. Failing test: TestDoubleCount::test_possible_match_bank_row_behaviour", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/financial/overview", "issue": "dedupe_across_sources runs the full O(bank × upi) cross_verify on every dashboard load (now over a 5000-row window), so the dashboard pays the same 25M-comparison worst case previously flagged for /verify. Consider caching the match result or bucketing by (amount, month)."},
+      {"endpoint": "GET /api/financial/overview", "issue": "Dedupe silently mutates analytics with no signal to the client — no flag/count telling the UI 'N rows were merged as duplicates', so a user cannot tell why the dashboard total differs from their bank statement."},
+      {"endpoint": "POST /api/statements/confirm-import", "issue": "STILL OPEN from iteration 14: no duplicate-import guard — re-uploading the same UPI CSV inserts the rows again."},
+      {"endpoint": "n/a — missing endpoint", "issue": "STILL OPEN from iteration 14: no DELETE /api/transactions/{id}; the new test suite has to insert/clean test rows directly in Mongo."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iteration15_dedupe.py",
+    "/app/backend/tests/test_iteration14_upi.py",
+    "/app/test_reports/pytest/iteration15_dedupe.xml",
+    "/app/test_reports/pytest/iteration15.xml"
+  ],
+  "action_items": [
+    "HIGH: dedupe only VERIFIED matches (score >= 0.85) in dedupe_across_sources — currently possible matches (>=0.6) also delete the bank row from analytics, under-counting spending.",
+    "MEDIUM: return a merged/deduped count from /financial/overview so the UI can explain why totals differ from the raw statement.",
+    "LOW: add a duplicate-import guard on /statements/confirm-import (dedupe on user_id + upi_ref/txn_id).",
+    "LOW: add DELETE /api/transactions/{id}."
+  ],
+  "critical_code_review_comments": [
+    "statements.py cross_verify(): matched_bank_ids mixes verified (>=0.85) and possible (>=0.6) matches. Returning one flat set makes it unsafe for dedupe_across_sources — split into verified_bank_ids / possible_bank_ids.",
+    "statements.py dedupe_across_sources(): good extraction and the ±3-day window now matches /verify, but it re-runs the whole matcher on the hot dashboard path; consider precomputing at import time and storing a duplicate_of pointer on the bank row instead.",
+    "cross_verify() indexes b[\"id\"] and u[\"id\"] directly; any legacy transaction document missing an `id` field will raise a KeyError and 500 both /verify and now /financial/overview. Use .get(\"id\") with a fallback.",
+    "resolve_duplicate() is now correct (Pydantic model + both-docs ownership check before mutating) — verified no deletion happens on the 404 paths.",
+    "App.js is still ~1600 lines (>700-line guideline) — unchanged from iteration 14."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration15_dedupe.py (new, 19 cases)",
+    "/app/backend/tests/test_iteration14_upi.py (stale assertion updated: resolve-duplicate missing field now expects 422 instead of 400, per the new Pydantic model)"
+  ],
+  "success_rate": {"backend": "99% (79/80 tests; only the new possible-match over-dedupe case fails)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "All test transactions inserted directly into Mongo with a TEST15_ description prefix and purged by an autouse fixture before and after every test. Verified afterwards: testuser@finaura.dev is back to exactly its original 6 demo bank rows (SALARY 185000, RENT PAYMENT 32000, AMAZON INDIA 3890, METRO CARD 1250, NETFLIX 649, SWIGGY 450), none tagged verified.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "testuser@finaura.dev / testpass123 (from /app/memory/test_credentials.md) — valid, login works",
+  "context_for_next_testing_agent": "Run both suites with -n 0 (neither is xdist-safe): cd /app/backend && python -m pytest tests/test_iteration15_dedupe.py tests/test_iteration14_upi.py -n 0 -p no:randomly. test_iteration15_dedupe.py inserts/purges its own TEST15_ rows via Mongo (insert_txns/purge helpers) so it does not depend on the seeded demo rows. The single expected failure is TestDoubleCount::test_possible_match_bank_row_behaviour (possible matches wrongly deduped in /financial/overview) — it should pass once dedupe is restricted to score >= 0.85. Frontend was NOT retested this iteration; the iteration-14 UI issues (empty 'UPI only' card height, low-contrast 'UPI — (0)' pill, no confirmation on destructive Keep UPI/Keep bank, dashboard KPI vs donut mismatch) are still open.",
+  "rca_of_the_issue": "The original double-count bug is fixed: /financial/overview now calls statements.dedupe_across_sources(), which runs the same cross_verify/_match_score matcher (amount+type equality, |Δdate| <= 3, ref/description corroboration) used by /statements/verify, so a UPI/bank pair with a 1-3 day settlement lag yields a single row and a single donut contribution. Residual defect: cross_verify's matched_bank_ids set is populated for both the >=0.85 (verified) and the >=0.6 (possible) branches, so dedupe_across_sources also removes bank rows for unconfirmed 'possible' matches. Repro: insert bank 1234 on 10 Aug and UPI 1234 on 12 Aug with unrelated descriptions → /verify shows it under possible_matches (0.75) while /financial/overview returns only the UPI row. Mitigation: track verified ids separately and pass only those to the analytics filter."
+}

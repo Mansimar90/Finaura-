@@ -302,9 +302,10 @@ class TestResolveDuplicate:
                         json={"keep_id": "nope-1", "drop_id": "nope-2"}, timeout=30)
         assert r.status_code == 404, r.text[:200]
 
-    def test_resolve_duplicate_missing_fields_400(self, client):
+    def test_resolve_duplicate_missing_fields_422(self, client):
+        # iteration 15: body is now a Pydantic model -> FastAPI validation 422
         r = client.post(f"{API}/statements/resolve-duplicate", json={"keep_id": "x"}, timeout=30)
-        assert r.status_code == 400
+        assert r.status_code == 422
 
     def test_resolve_duplicate_requires_auth(self):
         r = requests.post(f"{API}/statements/resolve-duplicate", json={"keep_id": "a", "drop_id": "b"}, timeout=30)

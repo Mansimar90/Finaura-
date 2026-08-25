@@ -364,6 +364,11 @@ class ConfirmImportInput(BaseModel):
     source: str | None = "bank"
 
 
+class ResolveDuplicateInput(BaseModel):
+    keep_id: str
+    drop_id: str
+
+
 class VerifyInput(BaseModel):
     month: str | None = None  # "Feb 2026" — optional; None = all months
 
@@ -434,43 +439,52 @@ def cross_verify(bank_txns: list[dict], upi_txns: list[dict]) -> dict:
     """Match bank transactions against UPI transactions and classify each.
     Returns lists suitable for the frontend verification view."""
     matched_bank_ids: set = set()
+    verified_bank_ids: set = set()
     matched_upi_ids: set = set()
     verified: list[dict] = []
     possible: list[dict] = []
-    # Prefer high-confidence matches first
     for u in upi_txns:
+        u_id = u.get("id")
+        if not u_id:
+            continue
         best = None
         best_score = 0.0
         best_reason = ""
         for b in bank_txns:
-            if b["id"] in matched_bank_ids:
+            b_id = b.get("id")
+            if not b_id or b_id in matched_bank_ids:
                 continue
             score, reason = _match_score(b, u)
             if score > best_score:
                 best = b; best_score = score; best_reason = reason
         if best is None:
             continue
+        b_id = best.get("id")
         if best_score >= 0.85:
             verified.append({
-                "upi_txn": u, "bank_txn": best, "score": round(best_score, 2),
+                "upi_txn": _strip_txn(u), "bank_txn": _strip_txn(best), "score": round(best_score, 2),
                 "reason": best_reason, "status": "verified",
             })
-            matched_bank_ids.add(best["id"])
-            matched_upi_ids.add(u["id"])
+            matched_bank_ids.add(b_id)
+            verified_bank_ids.add(b_id)
+            matched_upi_ids.add(u_id)
         elif best_score >= 0.6:
             possible.append({
-                "upi_txn": u, "bank_txn": best, "score": round(best_score, 2),
+                "upi_txn": _strip_txn(u), "bank_txn": _strip_txn(best), "score": round(best_score, 2),
                 "reason": best_reason, "status": "possible",
             })
-            matched_bank_ids.add(best["id"])
-            matched_upi_ids.add(u["id"])
-    upi_only = [u for u in upi_txns if u["id"] not in matched_upi_ids]
-    bank_only = [b for b in bank_txns if b["id"] not in matched_bank_ids]
+            matched_bank_ids.add(b_id)
+            matched_upi_ids.add(u_id)
+    upi_only = [_strip_txn(u) for u in upi_txns if u.get("id") not in matched_upi_ids]
+    bank_only = [_strip_txn(b) for b in bank_txns if b.get("id") not in matched_bank_ids]
     return {
         "verified_matches": verified,
         "possible_matches": possible,
         "upi_only": upi_only,
         "bank_only": bank_only,
+        # Internal — used by dedupe_across_sources; stripped from public /verify response.
+        # Only VERIFIED matches (>=0.85) are safe to dedupe automatically.
+        "verified_bank_ids": list(verified_bank_ids),
         "counts": {
             "bank_total": len(bank_txns),
             "upi_total": len(upi_txns),
@@ -480,6 +494,25 @@ def cross_verify(bank_txns: list[dict], upi_txns: list[dict]) -> dict:
             "bank_only": len(bank_only),
         },
     }
+
+
+def _strip_txn(t: dict) -> dict:
+    """Return a client-safe copy of a transaction (no Mongo _id / user_id / audit fields)."""
+    return {k: v for k, v in t.items() if k not in ("_id", "user_id", "created_at", "verified_at")}
+
+
+def dedupe_across_sources(transactions: list[dict]) -> list[dict]:
+    """Return transactions with cross-source duplicates removed. Only VERIFIED matches
+    (score >= 0.85) are auto-deduped so we never silently drop an unrelated same-amount
+    payment that just happens to fall within 3 days. Possible matches (0.6-0.85) stay
+    in analytics and only surface in the /verify view for the user to review."""
+    bank = [t for t in transactions if t.get("source", "bank") == "bank"]
+    upi = [t for t in transactions if t.get("source") == "upi"]
+    if not upi:
+        return transactions
+    result = cross_verify(bank, upi)
+    drop_bank_ids = set(result.get("verified_bank_ids") or [])
+    return [t for t in transactions if not (t.get("source", "bank") == "bank" and t.get("id") in drop_bank_ids)]
 
 
 def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
@@ -598,6 +631,9 @@ def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
         bank = [t for t in all_txns if t.get("source", "bank") == "bank"]
         upi = [t for t in all_txns if t.get("source") == "upi"]
         result = cross_verify(bank, upi)
+        # Don't leak internal helper field to clients
+        result.pop("matched_bank_ids", None)
+        result.pop("verified_bank_ids", None)
         # Per-month breakdown
         months: dict[str, dict] = {}
         for t in all_txns:
@@ -608,18 +644,20 @@ def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
         return result
 
     @router.post("/resolve-duplicate")
-    async def resolve_duplicate(body: dict, user=Depends(get_current_user)):
+    async def resolve_duplicate(body: ResolveDuplicateInput, user=Depends(get_current_user)):
         """Deduplicate a verified match by deleting one side. The user chooses which
         (usually the bank side, since UPI has richer metadata)."""
         uid = str(user["_id"])
-        keep_id = body.get("keep_id")
-        drop_id = body.get("drop_id")
-        if not keep_id or not drop_id:
-            raise HTTPException(400, "keep_id and drop_id are required.")
-        result = await db.finaura_transactions.delete_one({"id": drop_id, "user_id": uid})
-        if result.deleted_count == 0:
-            raise HTTPException(404, "Transaction not found or not owned by you.")
-        # Tag the survivor as verified
+        keep_id = body.keep_id
+        drop_id = body.drop_id
+        if keep_id == drop_id:
+            raise HTTPException(400, "keep_id and drop_id must differ.")
+        # Verify both belong to this user before touching anything
+        keep_doc = await db.finaura_transactions.find_one({"id": keep_id, "user_id": uid})
+        drop_doc = await db.finaura_transactions.find_one({"id": drop_id, "user_id": uid})
+        if not keep_doc or not drop_doc:
+            raise HTTPException(404, "One or both transactions not found or not owned by you.")
+        await db.finaura_transactions.delete_one({"id": drop_id, "user_id": uid})
         await db.finaura_transactions.update_one(
             {"id": keep_id, "user_id": uid},
             {"$set": {"verified": True, "verified_at": datetime.now(timezone.utc)}},
