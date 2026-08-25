@@ -272,8 +272,14 @@ function Statements({ data, isDemo, reload }) {
   const [source, setSource] = useState('bank'); // 'bank' | 'upi' | 'verify'
   const [verifyData, setVerifyData] = useState(null);
   const [verifyBusy, setVerifyBusy] = useState(false);
+  const [master, setMaster] = useState(null);
   const navigate = useNavigate();
   useEffect(() => setTxns(data.transactions), [data.transactions]);
+  const loadMaster = async () => {
+    if (isDemo) return;
+    try { const { data: m } = await api.get('/statements/master'); setMaster(m); } catch { /* silent */ }
+  };
+  useEffect(() => { loadMaster(); /* eslint-disable-next-line */ }, [isDemo, data.transactions]);
   const update = async (id, category) => {
     if (isDemo) { navigate('/signup'); return; }
     setTxns((prev) => prev.map((t) => (t.id === id ? { ...t, category } : t)));
@@ -309,6 +315,24 @@ function Statements({ data, isDemo, reload }) {
         <button data-testid="demo-shortcut-button" className="outline-btn" onClick={importDemo}><Plus size={17} /> {isDemo ? 'View demo' : 'Load six-month demo'}</button>
       </div>
       {uploaded && <div className="success-banner" data-testid="statement-upload-success"><Check size={18} /> Demo statement imported — review the categorization before confirming.</div>}
+
+      {master && master.master_count > 0 && (
+        <Card data-testid="master-dataset-card">
+          <SectionTitle eyebrow="Master dataset — single source of truth" title="Bank + UPI, cross-verified" />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 14, marginTop: 10 }}>
+            <div><div className="eyebrow">Transactions</div><div style={{ fontSize: 22, fontWeight: 700 }} data-testid="master-count">{master.master_count}</div><div style={{ fontSize: 11, color: '#8b9995' }}>{master.removed_by_dedupe > 0 ? `${master.removed_by_dedupe} bank↔UPI duplicate${master.removed_by_dedupe === 1 ? '' : 's'} merged` : 'no duplicates yet'}</div></div>
+            <div><div className="eyebrow">Income</div><div style={{ fontSize: 22, fontWeight: 700, color: '#087f56' }} data-testid="master-income">+₹{Number(master.income_total || 0).toLocaleString('en-IN')}</div></div>
+            <div><div className="eyebrow">Expenses</div><div style={{ fontSize: 22, fontWeight: 700, color: '#c14a3d' }} data-testid="master-expense">−₹{Number(master.expense_total || 0).toLocaleString('en-IN')}</div></div>
+            <div><div className="eyebrow">Verified pairs</div><div style={{ fontSize: 22, fontWeight: 700 }} data-testid="master-verified">{master.cross_check.verified}</div><div style={{ fontSize: 11, color: '#8b9995' }}>{master.cross_check.possible} need{master.cross_check.possible === 1 ? 's' : ''} review</div></div>
+            <div><div className="eyebrow">Coverage</div><div style={{ fontSize: 13, fontWeight: 600 }}>Bank {master.by_source.bank?.count || 0} · UPI {master.by_source.upi?.count || 0}</div><div style={{ fontSize: 11, color: '#8b9995' }}>{master.cross_check.bank_only} bank-only · {master.cross_check.upi_only} UPI-only</div></div>
+          </div>
+          {(master.warnings || []).length > 0 && (
+            <div style={{ marginTop: 14, padding: '10px 14px', background: '#fff8ec', border: '1px solid #f5d891', borderRadius: 8, fontSize: 12, color: '#7a5a1a' }} data-testid="master-warnings">
+              {master.warnings.map((w, i) => <div key={i}>· {w}</div>)}
+            </div>
+          )}
+        </Card>
+      )}
 
       <div className="settings-tabs" data-testid="statements-tabs">
         <button data-testid="stmt-tab-bank" className={`settings-tab ${source === 'bank' ? 'active' : ''}`} onClick={() => setSource('bank')}>Bank statement</button>

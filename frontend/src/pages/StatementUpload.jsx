@@ -32,10 +32,11 @@ export default function StatementUpload({ onImported, source = 'bank' }) {
   const [step, setStep] = useState('choose'); // choose -> map (csv) -> review -> done
   const [aiReviewed, setAiReviewed] = useState(false);
   const [aiNote, setAiNote] = useState('');
+  const [extraction, setExtraction] = useState(null); // extraction_summary from backend
 
   const reset = () => {
     setFile(null); setPreview(null); setMapping({}); setParsed([]); setError('');
-    setImported(0); setStep('choose'); setAiReviewed(false); setAiNote('');
+    setImported(0); setStep('choose'); setAiReviewed(false); setAiNote(''); setExtraction(null);
   };
 
   const handleFile = async (f) => {
@@ -54,6 +55,7 @@ export default function StatementUpload({ onImported, source = 'bank' }) {
       } else {
         // PDF: server already extracted transactions — run AI review before Review step
         const rawTxns = data.transactions || [];
+        setExtraction(data.extraction_summary || null);
         if (rawTxns.length) {
           try {
             const { data: reviewed } = await api.post('/statements/ai-review',
@@ -83,6 +85,7 @@ export default function StatementUpload({ onImported, source = 'bank' }) {
       form.append('source', source);
       const { data } = await api.post('/statements/parse', form);
       const rawTxns = data.transactions || [];
+      setExtraction(data.extraction_summary || null);
       // Second pass: ask FINAURA AI to auto-categorize + sanity-check every row
       // so the user doesn't have to hand-tag Food/Shopping/etc.
       if (rawTxns.length) {
@@ -198,6 +201,24 @@ export default function StatementUpload({ onImported, source = 'bank' }) {
           <div className="upload-stepbar">
             <span>1. Map columns</span> <ChevronRight size={14} /> <span className="active">2. Review</span> <ChevronRight size={14} /> <span>3. Import</span>
           </div>
+          {extraction && (
+            <div data-testid="extraction-summary" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12, padding: 14, background: '#f5faf7', border: '1px solid #d3ecdf', borderRadius: 8, margin: '10px 0' }}>
+              {typeof extraction.pages_processed === 'number' && (
+                <div><div style={{ fontSize: 10, color: '#556b60', textTransform: 'uppercase', letterSpacing: 0.5 }}>Pages read</div><div style={{ fontSize: 18, fontWeight: 700 }} data-testid="ex-pages">{extraction.pages_processed}</div></div>
+              )}
+              <div><div style={{ fontSize: 10, color: '#556b60', textTransform: 'uppercase', letterSpacing: 0.5 }}>Transactions found</div><div style={{ fontSize: 18, fontWeight: 700 }} data-testid="ex-txns">{extraction.transactions_detected}</div></div>
+              <div><div style={{ fontSize: 10, color: '#556b60', textTransform: 'uppercase', letterSpacing: 0.5 }}>Credits</div><div style={{ fontSize: 15, fontWeight: 600, color: '#087f56' }} data-testid="ex-credits">{extraction.credits_count} · +₹{Number(extraction.credits_total || 0).toLocaleString('en-IN')}</div></div>
+              <div><div style={{ fontSize: 10, color: '#556b60', textTransform: 'uppercase', letterSpacing: 0.5 }}>Debits</div><div style={{ fontSize: 15, fontWeight: 600, color: '#c14a3d' }} data-testid="ex-debits">{extraction.debits_count} · −₹{Number(extraction.debits_total || 0).toLocaleString('en-IN')}</div></div>
+              {extraction.needs_review > 0 && (
+                <div><div style={{ fontSize: 10, color: '#556b60', textTransform: 'uppercase', letterSpacing: 0.5 }}>Needs review</div><div style={{ fontSize: 15, fontWeight: 600, color: '#b6721e' }} data-testid="ex-needs-review">{extraction.needs_review}</div></div>
+              )}
+            </div>
+          )}
+          {extraction && (extraction.warnings || []).length > 0 && (
+            <div data-testid="extraction-warnings" style={{ padding: '10px 14px', background: '#fff2e6', border: '1px solid #f5a97a', borderRadius: 8, margin: '10px 0', fontSize: 12, color: '#8a3d0b' }}>
+              {extraction.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+            </div>
+          )}
           <p style={{ fontSize: 13, color: '#556b60' }}>
             {parsed.length} transaction{parsed.length === 1 ? '' : 's'} found.
             {aiReviewed

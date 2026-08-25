@@ -429,15 +429,20 @@ def _classify_columns(header: list[str]) -> dict:
     return idx
 
 
-def parse_pdf(content: bytes, source: str = "bank") -> tuple[list[dict], str]:
+def parse_pdf(content: bytes, source: str = "bank") -> tuple[list[dict], str, dict]:
+    """Extract transactions from a PDF. Returns (transactions, sample_text, meta)
+    where meta = {'pages_processed': int, 'tables_seen': int, 'text_fallback_used': bool,
+    'warnings': [...]}"""
     try:
         import pdfplumber
     except ImportError as exc:
         raise HTTPException(status_code=503, detail="PDF parser not available on this server.") from exc
     transactions: list[dict] = []
     sample_snippet = ""
+    meta = {"pages_processed": 0, "tables_seen": 0, "text_fallback_used": False, "warnings": []}
     try:
         with pdfplumber.open(io.BytesIO(content)) as pdf:
+            meta["pages_processed"] = len(pdf.pages)
             # --- Strategy 1: proper table extraction ---
             for page in pdf.pages:
                 try:
@@ -447,6 +452,7 @@ def parse_pdf(content: bytes, source: str = "bank") -> tuple[list[dict], str]:
                 for tbl in tables:
                     if not tbl or len(tbl) < 2:
                         continue
+                    meta["tables_seen"] += 1
                     # First row is usually the header. Find one that has a Date-ish
                     # column so we're not mining a summary table.
                     header_i = 0
@@ -548,6 +554,12 @@ def parse_pdf(content: bytes, source: str = "bank") -> tuple[list[dict], str]:
 
             # --- Strategy 2: text fallback (only if tables gave us NOTHING useful) ---
             if not transactions:
+                meta["text_fallback_used"] = True
+                if meta["tables_seen"] == 0:
+                    meta["warnings"].append(
+                        "No tabular structure found — this looks like a scanned or image-only PDF. "
+                        "Falling back to text extraction; some rows may be missed."
+                    )
                 lines: list[str] = []
                 for page in pdf.pages:
                     text = page.extract_text() or ""
@@ -623,7 +635,16 @@ def parse_pdf(content: bytes, source: str = "bank") -> tuple[list[dict], str]:
             continue
         seen.add(k)
         unique.append(t)
-    return unique, sample_snippet
+    # Warning heuristic: if we processed 3+ pages but found only a handful of
+    # rows, something upstream is wrong (encrypted PDF, scanned image, or the
+    # bank uses a very unusual layout). Surface it to the user before import.
+    if meta["pages_processed"] >= 3 and len(unique) < meta["pages_processed"]:
+        meta["warnings"].append(
+            f"Only {len(unique)} transaction(s) extracted from {meta['pages_processed']} pages — "
+            "the file may be scanned/image-based or use a layout we don't recognise. "
+            "If it's a scanned PDF, export a fresh CSV/XLSX from your bank's portal."
+        )
+    return unique, sample_snippet, meta
 
 
 # -------- FastAPI router --------
@@ -981,6 +1002,40 @@ def _find_verified_match(new_txn: dict, existing_other: list[dict]) -> dict | No
     return best if best_score >= 0.85 else None
 
 
+# -------- Extraction summary helper --------
+
+def _extraction_summary(transactions: list[dict], pages_processed: int | None = None,
+                        warnings: list[str] | None = None, extra: dict | None = None) -> dict:
+    """Uniform summary the frontend shows on the Review step BEFORE import.
+    Includes counts by direction, needs-review count, and warnings so the user
+    can spot 'only 2 rows out of a 6-month statement' before saving."""
+    credits = sum(1 for t in transactions if (t.get("type") or "").lower() == "income")
+    debits = sum(1 for t in transactions if (t.get("type") or "").lower() == "expense")
+    credit_total = sum(float(t.get("amount") or 0) for t in transactions if (t.get("type") or "").lower() == "income")
+    debit_total = sum(float(t.get("amount") or 0) for t in transactions if (t.get("type") or "").lower() == "expense")
+    needs_review = sum(1 for t in transactions
+                       if (t.get("category") in {"Miscellaneous Credit", "Miscellaneous Debit"})
+                       or not (t.get("description") or "").strip()
+                       or (len((t.get("description") or "").strip()) < 4))
+    warns = list(warnings or [])
+    if not transactions:
+        warns.append("No transactions were detected. Check the column mapping (CSV/Excel) or export a fresh CSV from your bank if this is a scanned PDF.")
+    summary = {
+        "transactions_detected": len(transactions),
+        "credits_count": credits,
+        "debits_count": debits,
+        "credits_total": round(credit_total, 2),
+        "debits_total": round(debit_total, 2),
+        "needs_review": needs_review,
+        "warnings": warns,
+    }
+    if pages_processed is not None:
+        summary["pages_processed"] = pages_processed
+    if extra:
+        summary.update(extra)
+    return summary
+
+
 def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
     router = APIRouter(prefix="/statements", tags=["statements"])
 
@@ -1002,16 +1057,29 @@ def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
                 info = csv_preview(raw, source=source)
             except Exception as exc:
                 raise HTTPException(status_code=400, detail=f"Couldn't read this CSV: {exc}") from exc
+            info["extraction_summary"] = _extraction_summary(
+                [], warnings=[],
+                extra={"columns_seen": len(info.get("columns") or []), "row_estimate": info.get("total_rows", 0)},
+            )
             return {"kind": "csv", "source": source, **info}
         if name.endswith(".xlsx") or name.endswith(".xls"):
             try:
                 info = excel_preview(raw, source=source)
             except Exception as exc:
                 raise HTTPException(status_code=400, detail=f"Couldn't read this spreadsheet: {exc}") from exc
+            info["extraction_summary"] = _extraction_summary(
+                [], warnings=[],
+                extra={"columns_seen": len(info.get("columns") or []), "row_estimate": info.get("total_rows", 0)},
+            )
             return {"kind": "excel", "source": source, **info}
         if name.endswith(".pdf") or (file.content_type or "") == "application/pdf":
-            transactions, sample = parse_pdf(raw, source=source)
-            return {"kind": "pdf", "source": source, "transactions": transactions, "sample_lines": sample}
+            transactions, sample, meta = parse_pdf(raw, source=source)
+            summary = _extraction_summary(transactions, pages_processed=meta.get("pages_processed"),
+                                          warnings=meta.get("warnings"),
+                                          extra={"tables_seen": meta.get("tables_seen"),
+                                                 "text_fallback_used": meta.get("text_fallback_used")})
+            return {"kind": "pdf", "source": source, "transactions": transactions,
+                    "sample_lines": sample, "extraction_summary": summary}
         raise HTTPException(status_code=415, detail="Unsupported file. Please upload CSV, Excel, or PDF.")
 
     @router.post("/parse")
@@ -1036,12 +1104,34 @@ def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
             raise HTTPException(status_code=400, detail="Invalid mapping JSON.")
         name = (file.filename or "").lower()
         if name.endswith(".csv"):
-            return {"transactions": parse_csv(raw, mapping_dict, source=source), "source": source}
+            txns = parse_csv(raw, mapping_dict, source=source)
+            row_estimate = 0
+            warnings = []
+            try:
+                _prev = csv_preview(raw, source=source)
+                row_estimate = _prev.get("total_rows", 0) or 0
+            except Exception:
+                pass
+            if row_estimate and len(txns) < max(2, int(row_estimate * 0.3)):
+                warnings.append(
+                    f"Only {len(txns)} of ~{row_estimate} rows produced a transaction. "
+                    "Double-check the column mapping — the Amount / Debit / Credit column may be pointing to the wrong field."
+                )
+            return {"transactions": txns, "source": source,
+                    "extraction_summary": _extraction_summary(txns, warnings=warnings,
+                                                              extra={"row_estimate": row_estimate})}
         if name.endswith(".xlsx") or name.endswith(".xls"):
-            return {"transactions": parse_excel(raw, mapping_dict, source=source), "source": source}
+            txns = parse_excel(raw, mapping_dict, source=source)
+            return {"transactions": txns, "source": source,
+                    "extraction_summary": _extraction_summary(txns)}
         if name.endswith(".pdf"):
-            transactions, _ = parse_pdf(raw, source=source)
-            return {"transactions": transactions, "source": source}
+            transactions, _sample, meta = parse_pdf(raw, source=source)
+            return {"transactions": transactions, "source": source,
+                    "extraction_summary": _extraction_summary(transactions,
+                                                              pages_processed=meta.get("pages_processed"),
+                                                              warnings=meta.get("warnings"),
+                                                              extra={"tables_seen": meta.get("tables_seen"),
+                                                                     "text_fallback_used": meta.get("text_fallback_used")})}
         raise HTTPException(status_code=415, detail="Unsupported file.")
 
     @router.post("/ai-review")
@@ -1170,6 +1260,67 @@ def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
             entry["bank_count" if t.get("source", "bank") == "bank" else "upi_count"] += 1
         result["months"] = sorted(months.values(), key=lambda x: x["month"], reverse=True)
         return result
+
+    @router.get("/master")
+    async def master(user=Depends(get_current_user)):
+        """Single source of truth for the dashboard: returns the deduped master
+        ledger (bank ∪ UPI with cross-source duplicates merged), the cross-check
+        counts (verified / possible / bank-only / upi-only), and per-source totals.
+        The dashboard, insights, goals and AI all read from THIS view — never from
+        raw bank + UPI sums, so a UPI payment linked to a bank card is counted once."""
+        uid = str(user["_id"])
+        all_txns = [t async for t in db.finaura_transactions.find({"user_id": uid}).limit(5000)]
+        for t in all_txns:
+            t.pop("_id", None)
+            t.pop("user_id", None)
+            t.pop("created_at", None)
+        bank = [t for t in all_txns if t.get("source", "bank") == "bank"]
+        upi = [t for t in all_txns if t.get("source") == "upi"]
+        # Cross-verify to get status counts (never returned to client, only summaries)
+        cv = cross_verify(bank, upi)
+        # Deduped master ledger — same rule used by /financial/overview
+        master_list = dedupe_across_sources(all_txns)
+        income_sum = sum(float(t.get("amount") or 0) for t in master_list if t.get("type") == "Income")
+        expense_sum = sum(float(t.get("amount") or 0) for t in master_list if t.get("type") == "Expense")
+        # By source (post-dedupe) so the dashboard can show Bank vs UPI without double counting
+        by_source: dict = {}
+        for t in master_list:
+            src = t.get("source", "bank")
+            e = by_source.setdefault(src, {"count": 0, "income": 0.0, "expense": 0.0})
+            e["count"] += 1
+            if t.get("type") == "Income":
+                e["income"] += float(t.get("amount") or 0)
+            elif t.get("type") == "Expense":
+                e["expense"] += float(t.get("amount") or 0)
+        # Warnings the frontend can surface prominently
+        warnings: list[str] = []
+        if cv["counts"]["possible"] > 0:
+            warnings.append(
+                f"{cv['counts']['possible']} bank↔UPI pair(s) look like they may be the same transaction. "
+                "Review them on the Cross-verification tab so they're counted once."
+            )
+        if bank and not upi:
+            warnings.append("You've only uploaded a bank statement so far. Add your UPI statement to catch UPI-linked spending your bank narration hides.")
+        elif upi and not bank:
+            warnings.append("You've only uploaded a UPI statement so far. Add your bank statement to see salary, rent and card spending.")
+        return {
+            "master_count": len(master_list),
+            "raw_count": len(all_txns),
+            "removed_by_dedupe": len(all_txns) - len(master_list),
+            "income_total": round(income_sum, 2),
+            "expense_total": round(expense_sum, 2),
+            "net": round(income_sum - expense_sum, 2),
+            "by_source": {k: {"count": v["count"],
+                              "income": round(v["income"], 2),
+                              "expense": round(v["expense"], 2)} for k, v in by_source.items()},
+            "cross_check": {
+                "verified": cv["counts"]["verified"],
+                "possible": cv["counts"]["possible"],
+                "bank_only": cv["counts"]["bank_only"],
+                "upi_only": cv["counts"]["upi_only"],
+            },
+            "warnings": warnings,
+        }
 
     @router.post("/resolve-duplicate")
     async def resolve_duplicate(body: ResolveDuplicateInput, user=Depends(get_current_user)):
