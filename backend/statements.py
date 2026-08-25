@@ -403,9 +403,25 @@ def _extract_tables(pdf) -> list[list[list[str]]]:
 
 
 def _classify_columns(header: list[str]) -> dict:
-    """Map a table header row to column indices we care about."""
+    """Map a table header row to column indices we care about. Rejects merged /
+    unusable headers where multiple critical column names collapse into a single
+    cell (common on BoB / Hindi-bilingual statements)."""
     if not header:
         return {}
+    # Reject the merged-header case: cells 1..N are all empty AND cell 0 carries
+    # 2+ of our header keywords. This happens when pdfplumber flattens a bank's
+    # bilingual / stacked header row into one giant cell — column classification
+    # would fabricate a mapping that all points to cell 0 and every row would
+    # then be counted as Income. Caller should fall through to text-based parsing.
+    if len(header) >= 3 and (header[0] or "").strip():
+        first = (header[0] or "").lower()
+        rest_empty = all(not (c or "").strip() for c in header[1:])
+        hits = sum(1 for kw in ("debit", "credit", "balance", "description",
+                                 "narration", "amount", "withdrawal", "deposit",
+                                 "cheque", "date", "value", "particulars", "remarks")
+                   if kw in first)
+        if rest_empty and hits >= 2:
+            return {}
     idx: dict[str, int] = {}
     for i, cell in enumerate(header or []):
         h = (cell or "").strip().lower()
@@ -736,6 +752,140 @@ def parse_pdf(content: bytes, source: str = "bank") -> tuple[list[dict], str, di
                 if transactions:
                     meta["text_fallback_used"] = True
                     meta["record_parser_used"] = True
+
+            # --- Strategy 1.7: numbered-row BANK statement (BoB, SBI, HDFC, ICICI, PNB) ---
+            # Pattern: '<sr> <date> [<value_date>] <optional_debit> <optional_credit> <balance>'
+            # where dates may use '-', '.', or '/' and description text is on lines ABOVE
+            # and/or BELOW the row. Debit-vs-Credit is decided by the running-balance
+            # delta so we work with any bank layout (with or without an explicit '-' column).
+            if not transactions:
+                all_lines: list[str] = []
+                for page in pdf.pages:
+                    text = page.extract_text() or ""
+                    for ln in text.splitlines():
+                        s = ln.strip()
+                        if s:
+                            all_lines.append(s)
+                # A "row line" is: srno date [second date] one-or-more amounts, ending in a
+                # balance-shaped decimal. Amounts may be a placeholder '-' or a number.
+                ROW_RE = re.compile(
+                    r"^(\d{1,4})\s+"                                    # sr no
+                    r"(\d{1,2}[-./]\d{1,2}[-./]\d{2,4})"                # transaction date
+                    r"(?:\s+\d{1,2}[-./]\d{1,2}[-./]\d{2,4})?"          # optional value date
+                    r"\s+(.+?)\s+"                                       # middle numbers/placeholders
+                    r"([\d,]+\.\d{2})\s*$"                              # closing balance (must have decimals)
+                )
+                NUM_TOKEN = re.compile(r"^(?:-|[\d,]+(?:\.\d{1,2})?)$")
+
+                # Filter out header noise so it isn't confused for a description line.
+                noise_prefixes = ("account statement", "statement of transaction", "opening balance",
+                                  "closing balance", "s no", "sr.no", "transaction date",
+                                  "withdrawal", "deposit", "amount (inr)", "balance (inr)",
+                                  "s no.", "cheque number", "for any queries", "generated on")
+                def _is_desc_line(ln: str) -> bool:
+                    if not ln or len(ln) < 2:
+                        return False
+                    low = ln.lower()
+                    if any(low.startswith(p) or p in low[:40] for p in noise_prefixes):
+                        return False
+                    if re.match(r"^\d{1,2}[-./]\d{1,2}[-./]\d{2,4}\s+से", ln):
+                        return False  # Hindi date range header
+                    return True
+
+                rows: list[dict] = []
+                prev_balance: float | None = None
+                # Pre-compute all indices of ROW_RE-matching lines so we can find where
+                # a description body ends without spilling into the next row's prefix.
+                row_indices = [i for i, ln in enumerate(all_lines) if ROW_RE.match(ln)]
+                for ri, i in enumerate(row_indices):
+                    ln = all_lines[i]
+                    m = ROW_RE.match(ln)
+                    if not m:
+                        continue
+                    sr, txn_date, middle_str, bal_str = m.groups()
+                    balance = normalize_amount(bal_str)
+                    # Middle tokens: could be [debit, credit] with '-' placeholders, or [amount].
+                    tokens = [t for t in re.split(r"\s+", middle_str.strip()) if NUM_TOKEN.match(t)]
+                    debit = 0.0
+                    credit = 0.0
+                    if len(tokens) >= 2:
+                        # Standard bank layout: debit column then credit column, one is '-'
+                        d_raw = tokens[-2]
+                        c_raw = tokens[-1]
+                        debit = normalize_amount(d_raw) if d_raw != "-" else 0.0
+                        credit = normalize_amount(c_raw) if c_raw != "-" else 0.0
+                    elif len(tokens) == 1:
+                        # Single-amount layout (SBI): direction inferred from balance delta.
+                        amt = normalize_amount(tokens[0])
+                        if prev_balance is None:
+                            debit = amt  # first row — assume debit; will self-correct
+                        elif balance > prev_balance + 0.01:
+                            credit = amt
+                        else:
+                            debit = amt
+                    if debit <= 0 and credit <= 0:
+                        prev_balance = balance
+                        continue
+                    # Description assembly — for SBI-style formats the merchant NAME is
+                    # on the line RIGHT BEFORE the row (e.g. "GURWINDER" then "1 28.02.2026 500 ...").
+                    # For BoB-style formats the description wraps ABOVE (UPI/ref/time/...) and
+                    # a stray tail-letter (like "n" from "Sent") appears BELOW.
+                    # Rule: description = [prev few lines that aren't rows/headers] + [lines
+                    # between this row and next row], excluding the line RIGHT BEFORE the next
+                    # row (which is the next row's name-prefix).
+                    next_row_i = row_indices[ri + 1] if ri + 1 < len(row_indices) else len(all_lines)
+                    prev_row_i = row_indices[ri - 1] if ri > 0 else -1
+                    desc_parts: list[str] = []
+                    # "Above": only the single line right BEFORE this row (the merchant
+                    # name-prefix in SBI-style formats). Do NOT pull earlier lines — those
+                    # belong to the PREVIOUS row's tail description.
+                    if i - 1 > prev_row_i:
+                        cand = all_lines[i - 1]
+                        if _is_desc_line(cand) and not ROW_RE.match(cand):
+                            desc_parts.append(cand)
+                    # "Below": every line strictly between this row and the next row,
+                    # EXCLUDING the single line right before the next row (which is that
+                    # row's name-prefix). Use next_row_i - 1 as the stop.
+                    tail_stop = next_row_i - 1 if next_row_i - 1 > i else next_row_i
+                    for k in range(i + 1, tail_stop):
+                        if k >= len(all_lines):
+                            break
+                        cand = all_lines[k]
+                        if ROW_RE.match(cand):
+                            break
+                        if _is_desc_line(cand):
+                            desc_parts.append(cand)
+                    desc = " ".join(desc_parts)
+                    # Clean up mixed column bleed / stray tail letters
+                    desc = re.sub(r"\s+", " ", desc).strip(" -\t|")
+                    if not desc:
+                        desc = f"Bank transaction {sr}"
+                    upi_ref_m = re.search(r"/(\d{9,22})/", desc)
+                    upi_id_m = re.search(r"([\w.\-]+@[\w\-]+)", desc)
+                    if credit > 0:
+                        amount = credit; txn_type = "Income"
+                    else:
+                        amount = debit; txn_type = "Expense"
+                    txn_type, category = resolve_type_and_category(desc, txn_type, None)
+                    txn = {
+                        "id": str(uuid.uuid4()),
+                        "date": normalize_date(txn_date),
+                        "description": desc[:120],
+                        "amount": round(amount, 2),
+                        "type": txn_type,
+                        "category": category,
+                        "source": source,
+                    }
+                    if upi_ref_m:
+                        txn["upi_ref"] = upi_ref_m.group(1)
+                    if upi_id_m:
+                        txn["upi_id"] = upi_id_m.group(1)
+                    rows.append(txn)
+                    prev_balance = balance
+                if rows:
+                    transactions.extend(rows)
+                    meta["text_fallback_used"] = True
+                    meta["bank_row_parser_used"] = True
 
             # --- Strategy 2: text fallback (only if tables gave us NOTHING useful) ---
             if not transactions:
