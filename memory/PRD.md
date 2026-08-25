@@ -42,6 +42,14 @@ Finaura is an AI-powered personal financial intelligence platform that helps use
   - **POST /api/statements/resolve-duplicate**: user-driven merge (Pydantic `ResolveDuplicateInput`, verifies both docs belong to caller before mutating). Deletes one side, tags survivor `verified=true`. 422 on missing fields, 400 on same-id, 404 on foreign ids (no partial deletion).
   - **Frontend `/statements`**: new tabs Bank | UPI | Cross-verification. UPI upload dropzone. Verification view shows 6 status cards, monthly coverage badges, verified/possible match rows with "Keep UPI"/"Keep bank" actions, plus UPI-only / Bank-only lists.
   - **Testing**: 132/132 backend tests pass across the full suite (test_iteration14_upi.py, test_iteration15_dedupe.py, test_iteration16_dedupe_boundary.py + prior regression suites).
+- Phase 8 (Feb 25, 2026): **Financial data accuracy hardening** — user reported real-money impact bugs.
+  - **Strict Credit/Debit classification**: `parse_csv` now applies the "positive unsigned Amount defaults to Expense unless an income keyword is present" heuristic to BOTH `source=bank` and `source=upi` when there is no Debit/Credit column and no Type/CR/DR hint. This stops everyday debits (Swiggy, BigBasket, etc.) on single-Amount-column bank exports from being misread as Income. Refund / cashback / interest-credit / salary / dividend keywords still classify correctly as Income.
+  - **Dedupe over-merge fixed**: `_match_score` now (a) VETOES a match with score 0 when both sides carry a distinct 9-22 digit reference (bank narration ref vs UPI `upi_ref`/`txn_id`) — a conflicting reference proves the rows are different transactions; (b) requires either a UPI merchant name that fully appears in the bank narration OR ≥ 2 distinctive shared tokens for the +0.25 overlap bonus, so unrelated same-amount rows within 3 days no longer auto-merge and silently delete an expense; (c) expanded stop-word list (paid, sent, received, to, from, via, order, etc.).
+  - **`_auto_map_columns`**: short aliases `cr`/`dr` now match on word boundaries only, so a `Description` column no longer accidentally maps to Credit.
+  - **`DELETE /api/financial/data`**: now also purges `finaura_memories` and resets both `has_demo_data` and `has_real_data`. Individual statement deletion (`DELETE /api/statements/{id}`) already scoped to caller with 404 on foreign/unknown IDs.
+  - **Demo purge on real upload**: on the first real (non-demo) `/statements/confirm-import`, all demo-flagged rows/goals are removed and `has_real_data=true`; `/statements/import-demo` then returns 409.
+  - **Dark-mode text readability**: global CSS overrides in `App.css` for muted text, borders, and card backgrounds in dark mode.
+  - **Testing**: 32/32 iteration-18 P0 tests pass; 18/18 new iteration-19 verify + unit tests pass; 125/125 combined serial run pass. Full report in `/app/test_reports/iteration_19.json`.
 
 ## Prioritized backlog
 - **P1** — Goal edit/delete UI (backend already supports PATCH/DELETE).
@@ -50,6 +58,9 @@ Finaura is an AI-powered personal financial intelligence platform that helps use
 - **P2** — Advanced AI decision engine + goal-conflict engine.
 - **P2** — Multi-currency support.
 - **P2** — Server-issued unlock token after PIN/passkey verification (currently unlock state is client-side sessionStorage).
+- **P3** — Add a dedicated `Groceries` category (bigbasket, blinkit, zepto, dmart) — currently folded under Shopping.
+- **P3** — Migrate iteration14/15/16 test suites off the shared `testuser` to per-class fresh users to fix xdist race flakes.
+- **P3** — Split `statements.py` and `server.py` (both ~780 lines) into parsing / matching / router modules.
 
 ## External services (need your keys)
 Guide: `/app/memory/SETUP_GUIDE.md` — step-by-step for Google OAuth, Apple Sign-In, Resend.

@@ -83,13 +83,34 @@ def extract_upi_meta(description: str) -> dict:
 
 
 def guess_category(description: str, txn_type: str) -> str:
-    if txn_type == "Income":
-        return "Income"
     d = (description or "").lower()
+    # Detect internal transfers first — a "credit" from self is NOT income
+    if any(hint in d for hint in INTERNAL_TRANSFER_HINTS):
+        return "Internal Transfer"
+    if txn_type == "Income":
+        for cat, kws in CATEGORY_KEYWORDS.items():
+            if any(k in d for k in kws):
+                return cat if cat == "Income" else "Miscellaneous Credit"
+        # No confident classification — surface as Miscellaneous Credit, NOT auto-Income
+        return "Miscellaneous Credit"
+    # Expense branch
     for cat, kws in CATEGORY_KEYWORDS.items():
+        if cat == "Income":
+            continue
         if any(k in d for k in kws):
             return cat
-    return "Other"
+    return "Miscellaneous Debit"
+
+
+def resolve_type_and_category(desc: str, txn_type: str, category: str | None) -> tuple[str, str]:
+    """Central rule: an internal-transfer credit must never become 'Income'."""
+    d = (desc or "").lower()
+    if any(hint in d for hint in INTERNAL_TRANSFER_HINTS):
+        # Internal transfer — keep type direction but flag category
+        return txn_type, "Internal Transfer"
+    if category and category in ALLOWED_CATEGORIES:
+        return txn_type, category
+    return txn_type, guess_category(desc, txn_type)
 
 
 def normalize_amount(value: Any) -> float:
@@ -174,10 +195,17 @@ def csv_preview(content: bytes, source: str = "bank") -> dict:
 
 def _auto_map_columns(columns: list[str], source: str = "bank") -> dict:
     lower = {c.lower(): c for c in columns}
+    # Short aliases (2-3 chars like 'cr', 'dr') must match as whole tokens so they
+    # don't hit substrings inside longer column names (e.g. 'cr' inside 'Description').
+    SHORT = {"cr", "dr", "c", "d"}
     def find(*names):
         for n in names:
             for k, v in lower.items():
-                if n in k:
+                if n in SHORT:
+                    tokens = re.split(r"[^a-z0-9]+", k)
+                    if n in tokens:
+                        return v
+                elif n in k:
                     return v
         return None
     base = {
@@ -210,9 +238,19 @@ def parse_csv(content: bytes, mapping: dict, source: str = "bank") -> list[dict]
         if mapping.get("amount"):
             amount = normalize_amount(row.get(mapping["amount"]))
             txn_type, amount = _detect_type(amount, str(type_hint) if type_hint else None)
-            # UPI heuristic: positive-only amount + no type hint + merchant column → treat as an Expense (payment sent)
-            if source == "upi" and not type_hint and amount > 0 and mapping.get("merchant"):
-                txn_type = "Expense"
+            # Bank + UPI heuristic: when the statement has only an unsigned Amount column
+            # (no Debit/Credit split, no Type/CR/DR hint), positive amounts are outbound
+            # payments UNLESS the narration or merchant looks like an inflow. This prevents
+            # everyday debits (Swiggy, BigBasket, etc.) from being misread as Income.
+            if not type_hint and amount > 0:
+                merchant_val = str(row.get(mapping.get("merchant"), "") or "").lower() if mapping.get("merchant") else ""
+                desc_check = f"{str(desc_val) or ''} {merchant_val}".lower()
+                income_kws = CATEGORY_KEYWORDS["Income"] + [
+                    "received from", "credited by", "money in", "salary", "payroll",
+                    "refund", "cashback", "interest credit", "dividend",
+                ]
+                is_receive = any(kw in desc_check for kw in income_kws)
+                txn_type = "Income" if is_receive else "Expense"
         elif mapping.get("debit") or mapping.get("credit"):
             dr = normalize_amount(row.get(mapping.get("debit"))) if mapping.get("debit") else 0
             cr = normalize_amount(row.get(mapping.get("credit"))) if mapping.get("credit") else 0
@@ -228,13 +266,15 @@ def parse_csv(content: bytes, mapping: dict, source: str = "bank") -> list[dict]
             m_val = str(row.get(mapping.get("merchant"), "") or "").strip()
             if m_val:
                 cat_source = f"{m_val} {desc}"
+        # Central classification — internal transfers never leak into 'Income'
+        txn_type, category = resolve_type_and_category(cat_source, txn_type, None)
         txn = {
             "id": str(uuid.uuid4()),
             "date": normalize_date(date_val),
             "description": desc,
             "amount": round(amount, 2),
             "type": txn_type,
-            "category": guess_category(cat_source, txn_type),
+            "category": category,
             "source": source,
         }
         if source == "upi":
@@ -333,13 +373,14 @@ def parse_pdf(content: bytes, source: str = "bank") -> tuple[list[dict], str]:
         txn_type, absolute_amount = _detect_type(amount_value, hint)
         if absolute_amount <= 0:
             continue
+        txn_type, category = resolve_type_and_category(desc, txn_type, None)
         txn = {
             "id": str(uuid.uuid4()),
             "date": normalize_date(date_match.group(1)),
             "description": desc[:120],
             "amount": round(absolute_amount, 2),
             "type": txn_type,
-            "category": guess_category(desc, txn_type),
+            "category": category,
             "source": source,
         }
         if source == "upi":
@@ -354,14 +395,26 @@ def parse_pdf(content: bytes, source: str = "bank") -> tuple[list[dict], str]:
 
 # -------- FastAPI router --------
 
-ALLOWED_CATEGORIES = {"Income", "Food", "Shopping", "Transport", "Rent", "Bills", "Education", "Entertainment", "Healthcare", "Other"}
+ALLOWED_CATEGORIES = {
+    "Income", "Food", "Shopping", "Transport", "Rent", "Bills", "Education",
+    "Entertainment", "Healthcare", "Other",
+    "Miscellaneous Credit", "Miscellaneous Debit",
+    "Internal Transfer",
+}
 ALLOWED_TYPES = {"Income", "Expense"}
 ALLOWED_SOURCES = {"bank", "upi"}
+
+
+# Words that indicate a transfer that must NOT be counted as income
+INTERNAL_TRANSFER_HINTS = ("self transfer", "own account", "linked account", "credit card payment",
+                          "cc payment", "sweep", "auto sweep", "transfer to self",
+                          "imps to self", "neft to self")
 
 
 class ConfirmImportInput(BaseModel):
     transactions: list[dict]
     source: str | None = "bank"
+    file_name: str | None = None
 
 
 class ResolveDuplicateInput(BaseModel):
@@ -414,25 +467,55 @@ def _match_score(bank: dict, upi: dict) -> tuple[float, str]:
     delta = abs((d1 - d2).days)
     if delta > 3:
         return 0.0, f"date too far ({delta}d)"
+    # Extract UPI reference / txn id from BOTH sides (bank may carry it in narration).
+    upi_ref = (upi.get("upi_ref") or upi.get("txn_id") or "").strip()
+    bank_desc = (bank.get("description") or "")
+    # Pull a 9-22 digit run out of the bank narration if present.
+    m = re.search(r"\b(\d{9,22})\b", bank_desc)
+    bank_ref = m.group(1) if m else ""
+    # Hard veto: if BOTH sides carry a distinct reference id, they are different
+    # transactions — never auto-merge. This prevents silent expense deletion.
+    if upi_ref and bank_ref and upi_ref != bank_ref:
+        return 0.0, f"ref mismatch ({bank_ref} vs {upi_ref})"
     score = 0.6  # amount + type + close date
     if delta == 0:
         score += 0.15
-    # UPI ref or transaction id match in either description
-    ref = (upi.get("upi_ref") or upi.get("txn_id") or "").strip()
-    if ref and ref in (bank.get("description") or ""):
+    elif delta <= 2:
+        score += 0.05  # small bonus for a very close date
+    # Positive: UPI ref or transaction id match in bank narration
+    if upi_ref and upi_ref in bank_desc:
         score += 0.25
-        return min(score, 1.0), f"ref {ref} present"
-    # Description overlap
-    desc1 = (bank.get("description") or "").lower()
-    desc2 = (upi.get("description") or "").lower()
-    tokens1 = {t for t in re.split(r"[^a-z0-9]+", desc1) if len(t) > 3}
-    tokens2 = {t for t in re.split(r"[^a-z0-9]+", desc2) if len(t) > 3}
-    if tokens1 & tokens2:
-        score += 0.15
-    # UPI keyword in bank description
-    if "upi" in desc1 and delta <= 2:
-        score += 0.1
-    return min(score, 1.0), f"heuristic match ({delta}d)"
+        return min(score, 1.0), f"ref {upi_ref} present"
+    # Merchant / description overlap — must be a MEANINGFUL match to justify auto-merge.
+    # Generic verbs / connectives are excluded so 'Paid Wwww' vs 'Paid Yyyy' does not merge.
+    STOP = {
+        "upi", "payment", "credit", "debit", "transfer", "ref", "txn", "no", "id",
+        "order", "the", "and", "paid", "sent", "received", "receive", "to", "from",
+        "via", "bill", "for", "of", "on", "at", "by", "with", "money",
+    }
+    def _tokens(s: str) -> set:
+        return {t for t in re.split(r"[^a-z0-9]+", (s or "").lower()) if len(t) > 2 and t not in STOP}
+    bank_tokens = _tokens(bank_desc)
+    upi_desc_tokens = _tokens(upi.get("description", ""))
+    upi_merch_tokens = _tokens(upi.get("merchant", ""))
+    upi_tokens = upi_desc_tokens | upi_merch_tokens
+    overlap = bank_tokens & upi_tokens
+    # Strong signal: the UPI merchant name (distinctive, non-generic) fully appears
+    # in the bank narration — this is the classic "UPI SWIGGY BLR" vs merchant="Swiggy"
+    # dedupe case. If the UPI row has no dedicated merchant column, fall back to the
+    # UPI description tokens (which is what payment apps like PhonePe show as the payee).
+    upi_name_tokens = upi_merch_tokens or upi_desc_tokens
+    merchant_match = bool(upi_name_tokens) and upi_name_tokens.issubset(bank_tokens)
+    if merchant_match:
+        score += 0.25
+    elif len(overlap) >= 2:
+        score += 0.25
+    elif len(overlap) == 1:
+        score += 0.10
+    # 'upi' presence in bank narration is a nudge, not a requirement
+    if "upi" in bank_desc.lower():
+        score += 0.05
+    return min(score, 1.0), f"heuristic ({delta}d, overlap={sorted(overlap)[:2]})"
 
 
 def cross_verify(bank_txns: list[dict], upi_txns: list[dict]) -> dict:
@@ -515,6 +598,26 @@ def dedupe_across_sources(transactions: list[dict]) -> list[dict]:
     return [t for t in transactions if not (t.get("source", "bank") == "bank" and t.get("id") in drop_bank_ids)]
 
 
+def _find_verified_match(new_txn: dict, existing_other: list[dict]) -> dict | None:
+    """Find the best VERIFIED match (score >= 0.85) for `new_txn` in `existing_other`.
+    Returns the existing row so the caller can attach source linkage without inserting
+    a duplicate row into the ledger."""
+    best = None
+    best_score = 0.0
+    # cross_verify expects (bank, upi). Orient by source.
+    if new_txn.get("source") == "upi":
+        for b in existing_other:
+            score, _ = _match_score(b, new_txn)
+            if score > best_score:
+                best = b; best_score = score
+    else:
+        for u in existing_other:
+            score, _ = _match_score(new_txn, u)
+            if score > best_score:
+                best = u; best_score = score
+    return best if best_score >= 0.85 else None
+
+
 def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
     router = APIRouter(prefix="/statements", tags=["statements"])
 
@@ -582,7 +685,23 @@ def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
     async def confirm_import(body: ConfirmImportInput, user=Depends(get_current_user)):
         uid = str(user["_id"])
         source = body.source if body.source in ALLOWED_SOURCES else "bank"
+        file_name = (body.file_name or "").strip()[:120] or f"{source}-{datetime.now(timezone.utc).strftime('%d %b %Y %H:%M')}"
+        statement_id = str(uuid.uuid4())
+
+        # First-time real upload → nuke any pre-seeded demo rows so the ledger stays clean
+        demo_rows = await db.finaura_transactions.count_documents({"user_id": uid, "source": "demo"})
+        if demo_rows:
+            await db.finaura_transactions.delete_many({"user_id": uid, "source": "demo"})
+            await db.users.update_one({"_id": user["_id"]}, {"$set": {"has_demo_data": False}})
+
+        # Pull existing OTHER-source transactions so we can merge cross-source duplicates on import
+        other_source = "upi" if source == "bank" else "bank"
+        existing_other = [t async for t in db.finaura_transactions.find({
+            "user_id": uid, "source": other_source
+        })]
+
         clean = []
+        merged = 0
         for t in body.transactions:
             desc = str(t.get("description", "")).strip()
             try:
@@ -592,8 +711,12 @@ def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
             if not desc or amount <= 0:
                 continue
             txn_type = t.get("type") if t.get("type") in ALLOWED_TYPES else "Expense"
-            category = t.get("category") if t.get("category") in ALLOWED_CATEGORIES else "Other"
-            doc = {
+            # Central classification — an internal transfer credit never becomes 'Income'
+            cat_hint = t.get("merchant") or t.get("description") or ""
+            txn_type, category = resolve_type_and_category(f"{cat_hint} {desc}", txn_type,
+                                                          t.get("category") if t.get("category") in ALLOWED_CATEGORIES else None)
+
+            candidate = {
                 "id": str(uuid.uuid4()),
                 "user_id": uid,
                 "date": (t.get("date") or datetime.now(timezone.utc).strftime("%d %b %Y"))[:32],
@@ -602,17 +725,46 @@ def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
                 "type": txn_type,
                 "category": category,
                 "source": source,
+                "statement_id": statement_id,
+                "file_name": file_name,
                 "created_at": datetime.now(timezone.utc),
             }
-            # Persist UPI metadata if the frontend sent it
             for k in ("upi_ref", "txn_id", "upi_id", "merchant", "upi_app"):
                 v = t.get(k)
                 if v:
-                    doc[k] = str(v)[:80]
-            clean.append(doc)
+                    candidate[k] = str(v)[:80]
+
+            # Look for a VERIFIED match in the other source — if found, merge instead of inserting
+            match = _find_verified_match(candidate, existing_other)
+            if match:
+                merged += 1
+                await db.finaura_transactions.update_one(
+                    {"_id": match["_id"]},
+                    {"$set": {
+                        "linked_txn_id": candidate["id"],
+                        "linked_source": source,
+                        "linked_statement_id": statement_id,
+                        "verified": True,
+                        "verified_at": datetime.now(timezone.utc),
+                    }},
+                )
+                candidate["linked_txn_id"] = str(match.get("id"))
+                candidate["linked_source"] = other_source
+                candidate["linked_statement_id"] = match.get("statement_id")
+                candidate["verified"] = True
+                candidate["verified_at"] = datetime.now(timezone.utc)
+                # Prevent this bank/upi row from also linking to another
+                existing_other = [x for x in existing_other if x["_id"] != match["_id"]]
+            clean.append(candidate)
+
         if clean:
             await db.finaura_transactions.insert_many(clean)
-        return {"imported": len(clean), "source": source}
+        return {
+            "imported": len(clean),
+            "merged": merged,
+            "source": source,
+            "statement_id": statement_id,
+        }
 
     @router.get("/verify")
     async def verify(month: str | None = None, user=Depends(get_current_user)):

@@ -350,7 +350,7 @@ function Statements({ data, isDemo, reload }) {
                     <td><span className={t.type === 'Income' ? 'income-tag' : 'expense-tag'}>{t.type}</span></td>
                     <td>
                       <select data-testid={`transaction-category-${t.id}`} value={t.category} onChange={(e) => update(t.id, e.target.value)} disabled={isDemo}>
-                        {['Income', 'Food', 'Shopping', 'Transport', 'Rent', 'Bills', 'Education', 'Entertainment', 'Healthcare', 'Other'].map((c) => <option key={c}>{c}</option>)}
+                        {['Income', 'Food', 'Shopping', 'Transport', 'Rent', 'Bills', 'Education', 'Entertainment', 'Healthcare', 'Other', 'Miscellaneous Credit', 'Miscellaneous Debit', 'Internal Transfer'].map((c) => <option key={c}>{c}</option>)}
                       </select>
                     </td>
                     <td className={t.type === 'Income' ? 'amount-income' : ''}>{t.type === 'Income' ? '+' : '−'}{money(t.amount)}</td>
@@ -1160,7 +1160,7 @@ function FinancialPreferencesSection() {
   return (
     <div className="account-card" data-testid="financial-preferences-section">
       <h3>Financial preferences</h3>
-      <p style={{fontSize:12,color:'#556b60',margin:'0 0 14px',lineHeight:1.55}}>Set your defaults for new goals, budgets and reports. Applies right away.</p>
+      <p className="section-help">Set your defaults for new goals, budgets and reports. Applies right away.</p>
       <div className="pref-grid">
         <PrefRow label="Currency">
           <select data-testid="pref-currency" value={prefs.currency || 'INR'} onChange={(e) => onChange('currency', e.target.value)} className="pref-select">
@@ -1210,7 +1210,7 @@ function NotificationsSection() {
   return (
     <div className="account-card" data-testid="notifications-section">
       <h3>Notifications</h3>
-      <p style={{fontSize:12,color:'#556b60',margin:'0 0 14px',lineHeight:1.55}}>Choose what FINAURA AI can ping you about. All notifications are opt-in.</p>
+      <p className="section-help">Choose what FINAURA AI can ping you about. All notifications are opt-in.</p>
       <div className="notif-list">
         {OPTIONS.map(([k, label, hint]) => (
           <div key={k} className="notif-row" data-testid={`notif-row-${k}`}>
@@ -1237,6 +1237,12 @@ function NotificationsSection() {
 
 function DataManagementSection({ onReset, deleted }) {
   const [busy, setBusy] = useState(false);
+  const [statements, setStatements] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [confirmStmt, setConfirmStmt] = useState(null);
+  useEffect(() => {
+    api.get('/statements/list').then((r) => setStatements(r.data || [])).catch(() => {}).finally(() => setLoading(false));
+  }, [deleted]);
   const doExport = async () => {
     setBusy(true);
     try {
@@ -1249,10 +1255,20 @@ function DataManagementSection({ onReset, deleted }) {
       URL.revokeObjectURL(url);
     } catch (_) { /* noop */ } finally { setBusy(false); }
   };
+  const deleteOne = async () => {
+    if (!confirmStmt) return;
+    try {
+      await api.delete(`/statements/${confirmStmt.statement_id}`);
+      setStatements((prev) => prev.filter((s) => s.statement_id !== confirmStmt.statement_id));
+    } catch (_) { /* silent */ }
+    setConfirmStmt(null);
+    window.dispatchEvent(new Event('finaura:reload'));
+  };
+  const money = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
   return (
     <div className="account-card" data-testid="data-management-section">
       <h3>Data management</h3>
-      <p style={{fontSize:12,color:'#556b60',margin:'0 0 14px',lineHeight:1.55}}>Export a full copy of your Finaura data any time, or start fresh.</p>
+      <p className="section-help">Export a full copy of your Finaura data any time, delete individual statements, or start fresh.</p>
       <div className="rows">
         <div>
           <span>Export all data</span>
@@ -1263,15 +1279,50 @@ function DataManagementSection({ onReset, deleted }) {
           </strong>
         </div>
         <div>
-          <span>Reset financial data</span>
+          <span>Delete all financial data</span>
           <strong>
             <button className="pill-btn" data-testid="reset-financial-data-button" onClick={onReset}>
-              <Trash2 size={13} /> Reset finances
+              <Trash2 size={13} /> Delete all
             </button>
           </strong>
         </div>
       </div>
       {deleted && <div className="deleted-message" data-testid="data-deleted-message">Your saved goals and transactions have been deleted.</div>}
+
+      <h3 style={{ marginTop: 26, marginBottom: 6 }}>Uploaded statements</h3>
+      <p className="section-help">Delete an individual statement to remove only its transactions. Any cross-linked twin on the other source will be kept.</p>
+      {loading && <p className="data-mgmt-empty">Loading…</p>}
+      {!loading && statements.length === 0 && <p className="data-mgmt-empty" data-testid="no-statements-message">No uploaded statements yet.</p>}
+      {statements.map((s) => (
+        <div key={s.statement_id} className="notif-row" data-testid={`statement-row-${s.statement_id}`}>
+          <div>
+            <strong>{s.file_name || s.statement_id.slice(0, 8)} <span style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'.05em', color: s.source === 'upi' ? '#0b9565' : '#3b82f6', marginLeft:6 }}>{s.source}</span></strong>
+            <p>{s.count} txns · {money(s.total_income)} in / {money(s.total_expenses)} out · {s.first_date} → {s.last_date}</p>
+          </div>
+          <button className="pill-btn" data-testid={`delete-statement-${s.statement_id}`} onClick={() => setConfirmStmt(s)}>
+            <Trash2 size={13} /> Delete
+          </button>
+        </div>
+      ))}
+
+      {confirmStmt && (
+        <div className="modal-backdrop">
+          <div className="modal" data-testid="confirm-statement-delete-modal">
+            <button className="modal-close" onClick={() => setConfirmStmt(null)}>×</button>
+            <div className="eyebrow" style={{ color: '#a83932' }}>Delete statement</div>
+            <h3>Delete this statement?</h3>
+            <p style={{ color: '#556b60', fontSize: 13, lineHeight: 1.6, margin: '8px 0 18px' }}>
+              This removes <b>{confirmStmt.count}</b> transactions from your ledger and rebuilds analytics. Any transaction linked to a twin on the other source (bank↔UPI) will be preserved.
+            </p>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="pill-btn" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setConfirmStmt(null)} data-testid="confirm-statement-delete-cancel">Cancel</button>
+              <button className="danger-btn" style={{ flex: 1, justifyContent: 'center' }} onClick={deleteOne} data-testid="confirm-statement-delete-confirm">
+                <Trash2 size={14} /> Delete statement
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1469,6 +1520,13 @@ function useOverview(mode) {
     } catch (e) { setError(formatApiError(e)); }
   };
   useEffect(() => { load(); }, [mode]);
+  // Global reload event so any deep-nested action (e.g. statement deletion) can refresh
+  useEffect(() => {
+    const onReload = () => load();
+    window.addEventListener('finaura:reload', onReload);
+    return () => window.removeEventListener('finaura:reload', onReload);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
   return { data, error, reload: load };
 }
 

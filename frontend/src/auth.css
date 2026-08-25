@@ -438,3 +438,14 @@
 .mini-item small{display:block;color:#8b9995;font-size:11px;margin-top:2px}
 [data-theme="dark"] .mini-item{border-color:#1f3830}
 [data-theme="dark"] .mini-item strong{color:#e2ecdf}
+
+/* --- Sub-labels/hints in Settings sections (fixes dark-mode contrast) --- */
+.section-help{font-size:12px;color:#556b60;margin:0 0 14px;line-height:1.55}
+.account-card .rows>div span,.data-mgmt-empty{color:#4b5b56;font-size:12px}
+[data-theme="dark"] .section-help,[data-theme="dark"] .account-card .rows>div span,[data-theme="dark"] .data-mgmt-empty{color:#94a3b8}
+[data-theme="dark"] .goal-card small,[data-theme="dark"] .goal-card p{color:#94a3b8}
+[data-theme="dark"] .settings-tab{color:#94a3b8}
+[data-theme="dark"] .learn-eyebrow,[data-theme="dark"] .eyebrow{color:#5ee2b3}
+[data-theme="dark"] .pill-btn:not(.mint){background:#182b25;color:#e2ecdf;border-color:#1f3830}
+[data-theme="dark"] .pill-btn:not(.mint):hover{background:#0e3325;color:#5ee2b3}
+[data-theme="dark"] .notif-row p{color:#94a3b8}

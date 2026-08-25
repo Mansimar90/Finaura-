@@ -215,11 +215,40 @@ async def overview(user=Depends(get_current_user)):
     # with a ±3-day settlement lag or matching UPI reference.
     transactions = dedupe_across_sources(transactions)
     profile = user.get("profile") or {}
-    if user.get("has_demo_data") and profile == {}:
-        # Use demo summary snapshot for demo-imported users so metrics show
+    # Distinguish demo rows from real uploaded rows — demo-only accounts must not be
+    # misreported as having real data.
+    has_real_data = any(t.get("source") != "demo" for t in transactions)
+    if user.get("has_demo_data") and profile == {} and not has_real_data:
+        # Pure demo mode — user hasn't uploaded anything real yet
         summary = dict(DEMO_SUMMARY)
         history = HISTORY
+    elif has_real_data:
+        # Derive money truth from the DEDUPED unified ledger, not from profile snapshots.
+        # This is the fix for "demo data still shows after upload".
+        income_total = sum(int(t.get("amount", 0)) for t in transactions if t.get("type") == "Income")
+        expense_total = sum(int(t.get("amount", 0)) for t in transactions if t.get("type") == "Expense")
+        # Assume ~6-month statement window; monthly figures = totals / (unique months in data or 1)
+        months_seen = {t.get("date", "")[-7:] for t in transactions if t.get("date")}
+        divisor = max(1, len(months_seen))
+        monthly_income = income_total // divisor
+        monthly_expenses = expense_total // divisor
+        monthly_savings = max(0, monthly_income - monthly_expenses)
+        summary = {
+            "income": monthly_income,
+            "expenses": monthly_expenses,
+            "savings": monthly_savings,
+            "current_savings": int(profile.get("current_savings", 0)) if profile else monthly_savings * divisor,
+            "investments": int(profile.get("investments", 0)) if profile else 0,
+            "debt": int(profile.get("debt", 0)) if profile else 0,
+            "emi": int(profile.get("emi", 0)) if profile else 0,
+            "net_worth": int(profile.get("current_savings", 0) if profile else monthly_savings * divisor)
+                         + int(profile.get("investments", 0) if profile else 0)
+                         - int(profile.get("debt", 0) if profile else 0),
+            "health_score": _health_score({**profile, "monthly_income": monthly_income, "monthly_expenses": monthly_expenses}, goals),
+        }
+        history = _empty_history()
     else:
+        # Neither demo data nor uploaded data — fall back to profile snapshot (onboarding).
         income = int(profile.get("monthly_income", 0))
         expenses = int(profile.get("monthly_expenses", 0))
         summary = {
@@ -234,7 +263,13 @@ async def overview(user=Depends(get_current_user)):
             "health_score": _health_score(profile, goals),
         }
         history = _empty_history()
-    spending = _compute_spending(transactions) if transactions else (DEMO_SPENDING if user.get("has_demo_data") else [])
+    # Spending: from REAL data when we have it — never mix with demo.
+    if has_real_data:
+        spending = _compute_spending(transactions)
+    elif user.get("has_demo_data"):
+        spending = DEMO_SPENDING
+    else:
+        spending = []
     return {
         "mode": "user",
         "user": {
@@ -248,7 +283,8 @@ async def overview(user=Depends(get_current_user)):
         "transactions": transactions,
         "goals": goals,
         "spending": spending,
-        "has_demo_data": bool(user.get("has_demo_data")),
+        "has_demo_data": bool(user.get("has_demo_data")) and not has_real_data,
+        "has_real_data": has_real_data,
     }
 
 
@@ -460,10 +496,18 @@ async def update_transaction(txn_id: str, update: CategoryUpdate, user=Depends(g
 async def import_demo_statement(user=Depends(get_current_user)):
     """Simulated import — populates the user's account with the six-month demo dataset."""
     uid = str(user["_id"])
-    existing = await db.finaura_transactions.count_documents({"user_id": uid})
-    if existing == 0:
+    # Only insert if user has no real data. If they already uploaded real statements,
+    # don't mix demo data in with their financials.
+    real_exists = await db.finaura_transactions.count_documents({
+        "user_id": uid, "source": {"$ne": "demo"}
+    })
+    if real_exists:
+        raise HTTPException(status_code=409, detail="You have real uploaded data. Clear it first from Settings → Data Management before loading the demo.")
+    existing_demo = await db.finaura_transactions.count_documents({"user_id": uid, "source": "demo"})
+    if existing_demo == 0:
         await db.finaura_transactions.insert_many([
-            {**t, "id": str(uuid.uuid4()), "user_id": uid, "created_at": datetime.now(timezone.utc)} for t in TRANSACTIONS
+            {**t, "id": str(uuid.uuid4()), "user_id": uid, "source": "demo",
+             "created_at": datetime.now(timezone.utc)} for t in TRANSACTIONS
         ])
     await db.users.update_one(
         {"_id": user["_id"]},
@@ -477,8 +521,68 @@ async def delete_data(user=Depends(get_current_user)):
     uid = str(user["_id"])
     await db.finaura_goals.delete_many({"user_id": uid})
     await db.finaura_transactions.delete_many({"user_id": uid})
-    await db.users.update_one({"_id": user["_id"]}, {"$set": {"has_demo_data": False}})
+    await db.finaura_memories.delete_many({"user_id": uid})
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"has_demo_data": False, "has_real_data": False}},
+    )
     return {"deleted": True}
+
+
+@api_router.get("/statements/list")
+async def list_statements(user=Depends(get_current_user)):
+    """Return grouped uploaded statements so the user can review or delete individual ones."""
+    uid = str(user["_id"])
+    pipeline = [
+        {"$match": {"user_id": uid, "statement_id": {"$exists": True, "$ne": None}}},
+        {"$group": {
+            "_id": "$statement_id",
+            "source": {"$first": "$source"},
+            "count": {"$sum": 1},
+            "total_income": {"$sum": {"$cond": [{"$eq": ["$type", "Income"]}, "$amount", 0]}},
+            "total_expenses": {"$sum": {"$cond": [{"$eq": ["$type", "Expense"]}, "$amount", 0]}},
+            "first_date": {"$min": "$date"},
+            "last_date": {"$max": "$date"},
+            "imported_at": {"$min": "$created_at"},
+            "file_name": {"$first": "$file_name"},
+        }},
+        {"$sort": {"imported_at": -1}},
+    ]
+    grouped = [g async for g in db.finaura_transactions.aggregate(pipeline)]
+    return [{
+        "statement_id": g["_id"],
+        "source": g.get("source"),
+        "file_name": g.get("file_name"),
+        "count": g.get("count", 0),
+        "total_income": int(g.get("total_income", 0)),
+        "total_expenses": int(g.get("total_expenses", 0)),
+        "first_date": g.get("first_date"),
+        "last_date": g.get("last_date"),
+        "imported_at": (g.get("imported_at").isoformat() if g.get("imported_at") else None),
+    } for g in grouped]
+
+
+@api_router.delete("/statements/{statement_id}")
+async def delete_statement(statement_id: str, user=Depends(get_current_user)):
+    """Delete a single uploaded statement + its rows. Cross-source linked transactions
+    on the OTHER statement are kept intact (only the sources/statement pointer is cleared)."""
+    uid = str(user["_id"])
+    # Rows to remove
+    to_delete = [t async for t in db.finaura_transactions.find(
+        {"user_id": uid, "statement_id": statement_id}
+    )]
+    if not to_delete:
+        raise HTTPException(404, "Statement not found or not owned by you.")
+    # For each row, if it was linked to a row from the OTHER source, clean up the linkage
+    # on that surviving row so analytics don't keep referencing a deleted twin.
+    linked_ids = [t.get("linked_txn_id") for t in to_delete if t.get("linked_txn_id")]
+    if linked_ids:
+        await db.finaura_transactions.update_many(
+            {"user_id": uid, "id": {"$in": linked_ids}},
+            {"$unset": {"linked_txn_id": "", "linked_source": "", "verified": ""}},
+        )
+    res = await db.finaura_transactions.delete_many({"user_id": uid, "statement_id": statement_id})
+    return {"deleted": res.deleted_count, "statement_id": statement_id}
 
 
 # ============ Ask Finaura (chat) ============

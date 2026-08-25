@@ -1,0 +1,59 @@
+{
+  "summary": "Iteration 17 e2e test of the six FINAURA fixes. Backend: created /app/backend/tests/test_iteration17_ledger.py (20 tests: classification units, bank/UPI classification via API, cross-source dedupe both orders, demo purge + 409, /statements/list, DELETE /statements/{id}, verify+preview regression) and test_iteration17_demoflag.py (overview flag semantics). Full iteration regression: 160 passed / 2 failed (all 140 prior iteration-8..16 tests still pass). Frontend: verified login, dashboard uses real deduped uploaded data (income 81,200 / expenses 32,950 with Swiggy counted once), Settings -> Data Management statement list + per-statement delete + confirmation modal + global reload (dashboard refreshed to 80,000/30,450 after deleting the UPI statement), Statements category dropdown contains Miscellaneous Credit/Debit + Internal Transfer, and ran a programmatic WCAG contrast audit in light and dark mode on 8 pages.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/statements/confirm-import + GET /api/financial/overview", "issue": "Cross-source duplicate is NOT merged/deduped when the bank narration lacks the 'UPI' token or the UPI ref. Repro: bank CSV 'SWIGGY ORDER BLR' Debit 450 on 10 Aug, then UPI CSV 'Swiggy' 450 on 12 Aug -> confirm-import returns merged=0 and /financial/overview shows BOTH rows (expenses 36,400 instead of 35,950; Swiggy counted 900). _match_score gives 0.6 base + 0.15 desc-token overlap = 0.75, below the 0.85 verified threshold; the +0.1 'upi in bank description' bonus is what pushes realistic narrations over the line. Requirement #2/#4 (one deduped ledger, Swiggy only once) therefore only holds for bank narrations containing 'UPI'/the ref. Test: tests/test_iteration17_ledger.py::TestDedupePlainNarration", "priority": "HIGH"},
+      {"endpoint": "GET /api/financial/overview", "issue": "has_real_data is computed as len(transactions)>0, which counts source='demo' rows as REAL. A demo-only user (register -> import-demo, no uploads) gets has_demo_data=false, has_real_data=true, so the UI can no longer tell demo state from real state (demo banner/CTA logic breaks) and summary is derived from demo rows through the 'real data' branch. Fix: has_real_data = any(t.get('source') != 'demo'). Test: tests/test_iteration17_demoflag.py", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/statements/list", "issue": "first_date/last_date use Mongo $min/$max over the DATE STRING ('05 Aug 2025'), so ranges are lexicographic, not chronological (e.g. '05 Aug 2025' beats '18 Jul 2025'). Any statement spanning multiple months will show a wrong range."},
+      {"endpoint": "GET /api/statements/list vs /statements (UI)", "issue": "Statement list reports 'bank 4 txns' while the Statements > Bank tab renders only 3 rows, because the merged bank twin is filtered out of /financial/overview but still counted in the statement group. Counts should be consistent (e.g. expose merged/linked count)."},
+      {"endpoint": "GET /api/financial/overview", "issue": "history is always _empty_history() for real uploaded data, so the dashboard 'Cash flow / Your financial rhythm' chart renders all zeros while the KPI cards show real values; the 'Worth noticing' insight also narrates a fabricated month-over-month story ('After dipping in June...') with no history behind it."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dark mode - Profile page", "issues": ["16 form labels (Full name, Email, Phone, Occupation, Date of birth, Age, Location, Monthly income/expenses, Current savings, Investments...) render at color rgb(75,91,86) on background rgb(15,23,42) = 2.49:1 contrast (WCAG AA needs 4.5:1). Requirement #1 'no invisible grey-on-grey in dark mode' is not met on this page."]},
+      {"screen": "Dark mode - Settings > Account & Security", "issues": ["Row labels 'Display name', 'Email', 'Sign-in methods', 'App lock (4-digit PIN)', 'Session', 'No passkeys yet' at 2.49:1 (rgb(75,91,86) on rgb(15,23,42))."]},
+      {"screen": "Dark mode - Settings > Data Management", "issues": ["'Export all data' and 'Delete all financial data' row labels at 2.49:1 - barely legible (see screenshot). The inline styles color:'#556b60' / '#8b9995' used in DataManagementSection have no dark-theme override because they are inline."]},
+      {"screen": "Dark mode - FINAURA Learn / Six-Month Analysis", "issues": ["'TODAY'S FINANCIAL TERM' eyebrow + numeric badge '01' (Learn) and the 'Savings' label (Analysis) fall below 3:1."]},
+      {"screen": "Light mode - Settings tabs & primary buttons", "issues": ["Inactive settings tab labels rgb(139,153,149) on white = 2.87:1; 'Download JSON' white-on-green button = 2.54:1."]},
+      {"screen": "Profile page", "issues": ["Date of birth uses the raw browser date input (mm/dd/yyyy + native picker) instead of the app's styled calendar - inconsistent with the rest of the design system."]},
+      {"screen": "Dashboard (real uploaded data)", "issues": ["Cash-flow chart is an empty flat line for uploaded statements while the KPI cards show values (backend returns empty history) - looks broken."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration17_ledger.py",
+    "/app/backend/tests/test_iteration17_demoflag.py",
+    "/app/backend/tests/seed_iteration17_fe.py",
+    "/app/test_reports/pytest/iteration17_results.xml"
+  ],
+  "action_items": [
+    "Dedupe: make cross-source matching reach the merge threshold for realistic narrations without the 'UPI' token (e.g. fuzzy merchant-name similarity, or auto-merge when amount+type match and date delta<=3 with any shared merchant token) - currently identical Swiggy 450 pairs are double-counted at score 0.75.",
+    "Fix has_real_data in /financial/overview to exclude source='demo' rows so demo-only users are still reported as has_demo_data=true / has_real_data=false.",
+    "Add [data-theme=dark] overrides (or use CSS vars instead of hardcoded #4b5b56/#556b60/#8b9995 inline colors) for form labels and .rows span on Profile, Settings>Account and Settings>Data Management - contrast is 2.49:1 in dark mode.",
+    "Sort first_date/last_date chronologically in /statements/list instead of $min/$max over date strings.",
+    "Populate history for real uploaded data (or hide the cash-flow chart / insight card) so the dashboard chart is not an empty flat line."
+  ],
+  "critical_code_review_comments": [
+    "statements.py _match_score: the 0.85 verified threshold is only reachable when the bank narration contains 'UPI' (+0.1) or the exact UPI ref (+0.25). Description overlap alone caps at 0.75, so the headline 'no double counting' guarantee silently fails for plain bank narrations.",
+    "server.py overview(): has_real_data = len(transactions) > 0 conflates demo rows with real rows; every downstream flag/branch inherits the bug.",
+    "server.py list_statements(): $min/$max on a human-formatted date string is not a chronological aggregate.",
+    "App.js DataManagementSection: hardcoded inline hex colors bypass the theme system, which is exactly why the dark-mode contrast fixes did not reach these labels.",
+    "App.js deleteOne(): the axios delete error is swallowed silently ('/* silent */') - a failed statement delete gives the user no feedback while the row stays in the list."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration17_ledger.py",
+    "/app/backend/tests/test_iteration17_demoflag.py",
+    "/app/backend/tests/seed_iteration17_fe.py"
+  ],
+  "success_rate": {"backend": "98% (160/162 iteration tests; 18/20 new iteration-17 tests)", "frontend": "90% (all functional flows pass; dark-mode contrast requirement partially unmet)"},
+  "seed_data_creation": "Frontend test user it17fe@qa.finaura.dev / testpass123 (onboarded 'empty', bank_aug_2025.csv imported, upi_aug_2025.csv imported then deleted through the UI). Backend tests self-register throwaway *@qa.finaura.dev users and delete both financial data and the account in teardown. Re-seed anytime with: python /app/backend/tests/seed_iteration17_fe.py",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "it17fe@qa.finaura.dev / testpass123 (frontend); testuser@finaura.dev / testpass123 (existing, has demo state)",
+  "context_for_next_testing_agent": "Run: cd /app/backend && python -m pytest tests/ -n 0 -p no:randomly -k iteration (162 iteration tests). Two tests are intentionally failing and document real bugs: TestDedupePlainNarration::test_plain_narration_pair_is_deduped (plain bank narration + 2-day lag scores 0.75 < 0.85 so the pair is NOT merged -> Swiggy 450 counted twice) and test_iteration17_demoflag.py (demo rows counted as real data). Note /api/statements/parse requires the mapping produced by /statements/preview['guess'] - passing '{}' returns zero transactions. Login response key is 'access_token' (register returns 'token'). Frontend flows verified working: statement list, per-statement delete + confirm modal + dashboard reload, category dropdown options, demo->real purge. Remaining unverified area: PDF/Excel statement upload through the real file-picker UI, and the /statements Cross-verification tab UI.",
+  "rca_of_the_issue": "Dedupe gap: statements._match_score starts at 0.6 for (same type, same amount, <=3 day gap) and only adds +0.15 for same-day, +0.15 for a shared >3-char description token, +0.1 when 'upi' appears in the bank narration, +0.25 for an exact UPI ref. A realistic pair ('SWIGGY ORDER BLR' bank 10 Aug vs 'Swiggy' UPI 12 Aug) totals 0.75, below the 0.85 verified cut-off used by both _find_verified_match (import-time merge) and dedupe_across_sources (analytics), so the payment is inserted twice and double-counted in /financial/overview. Demo flag bug: server.py overview() derives has_real_data from the raw transaction count, and import-demo inserts rows into the same finaura_transactions collection with source='demo', so demo-only accounts are misreported as real-data accounts."
+}

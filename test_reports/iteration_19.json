@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 19 — backend-only re-verification of the four fixes flagged in iteration_18.json against the LIVE preview backend (https://wealth-insights-43.preview.emergentagent.com/api). Re-ran the pre-existing suites: test_iteration18_p0.py + test_iteration18_falsepositive.py = 32/32 PASSED (were 28/32). Also wrote two NEW independent suites that reproduce the exact repro steps from the bug report rather than trusting the existing assertions: /app/backend/tests/test_iteration19_verify.py (9 API-level tests on fresh isolated @qa.finaura.dev users) and /app/backend/tests/test_iteration19_units.py (9 unit tests on parse_csv/_match_score/_auto_map_columns) — 18/18 PASSED. Combined serial run of iteration 14/15/16/17_ledger/17_demoflag/18_p0/18_falsepositive/19_verify/19_units = 125 passed, 0 failed. Broader regression (finaura_regression + auth_phase2 + iteration13) = 71 passed, 5 skipped. ALL FOUR FIXES VERIFIED: (FIX1) 'Date,Description,Amount' bank CSV -> SWIGGY 450 and BIGBASKET 2200 are Expense, 'Salary from Acme' 80000 still Income, overview summary expenses=2650/income=80000; refund/interest-credit keyword rows still Income; explicit Type=DR/CR and negative amounts unchanged. (FIX2a) bank 'UPI/ACME/111111111111' vs UPI merchant=ACME upi_ref=222222222222 2 days apart -> _match_score returns 0.0 'ref mismatch', merged=0, both rows survive in /api/financial/overview (expenses 2500); a conflicting txn_id also vetoes; a ref present on the bank side only does NOT veto. (FIX2b) 'Paid Wwww Alpha' vs 'Paid Yyyy Beta' scores 0.75 (<0.85), both rows kept and surfaced under possible_matches; genuine 'SWIGGY ORDER BLR'+ref vs UPI merchant='Swiggy' still auto-dedupes (merged=1, expenses 450), and the merchant-in-description-only variant (no merchant column) also still dedupes. (FIX3) POST /api/memories -> DELETE /api/financial/data -> /api/memories empty and /api/settings/export memories empty. (FIX4) preview guess for 'Date,Description,Debit,Balance' no longer maps credit='Description'; 'DR/CR' and 'Dr Amount/Cr Amount' still map correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/statements/parse (categorization taxonomy)",
+        "issue": "'BIGBASKET GROCERY' is categorized as 'Shopping' — CATEGORY_KEYWORDS has no 'Groceries' category and puts bigbasket/blinkit/zepto/dmart/grocery under Shopping. Direction (Expense) is correct, so the reported bug is fixed, but the bug report expected category 'Groceries'. Cosmetic/reporting-quality only; decide whether to add a Groceries bucket."
+      },
+      {
+        "endpoint": "test-infra: tests/test_iteration14_upi.py, test_iteration15_dedupe.py, test_iteration16_dedupe_boundary.py",
+        "issue": "These three legacy suites all log in as the SHARED testuser@finaura.dev and import/wipe transactions on it. Under pytest.ini's -n 2 --dist loadscope they land on different workers and race, producing ~50% flaky failures (observed test_iteration14::TestImportAndVerify::test_overview_dedupes_across_sources and test_iteration15::TestDoubleCount::test_possible_match_bank_row_behaviour). Both pass 100% serially (-n 0) and pass when the racing module is excluded — NOT an application bug. Recommend migrating those suites to per-class fresh @qa.finaura.dev users like test_iteration18/19 do."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iteration19_verify.py",
+    "/app/backend/tests/test_iteration19_units.py",
+    "/app/test_reports/pytest/it19.xml",
+    "/app/test_reports/pytest/it19_verify.xml",
+    "/app/test_reports/pytest/it19_units.xml",
+    "/app/test_reports/pytest/it19_all.xml"
+  ],
+  "action_items": [
+    "No functional action required for the four reported fixes — all verified against the live backend.",
+    "OPTIONAL MINOR: add a 'Groceries' category (bigbasket/blinkit/zepto/dmart/grocery) instead of folding them into 'Shopping'.",
+    "OPTIONAL TEST-INFRA: give test_iteration14/15/16 their own throwaway users so they stop racing under -n 2 (currently ~50% flaky in parallel, 100% green serially).",
+    "OPTIONAL REFACTOR: statements.py (~790 lines) and server.py (~775 lines) are at the size limit — split parsing / matching / router."
+  ],
+  "critical_code_review_comments": [
+    "statements.py parse_csv: the direction heuristic is now source-agnostic and only gated on 'no type_hint and amount > 0' — correct. Note it treats ANY positive unsigned amount without an income keyword as Expense, so an unsigned-Amount statement of purely inbound rows with unusual wording would be misread; consider also honouring a Balance-delta column when present.",
+    "statements.py _match_score: the ref veto only fires when BOTH sides expose a 9-22 digit ref. A bank narration with a masked/partial ref (e.g. 'UPI/ACME/XXXX1122') will not trigger the veto — acceptable, but worth a comment.",
+    "server.py delete_data(): now wipes goals + transactions + memories and resets has_demo_data/has_real_data. It does not clear any chat/session history collection — confirm that is intended.",
+    "_auto_map_columns short-alias tokenization is correct for 'DR'/'CR'/'Dr Amount'; verified 'Description' no longer matches 'cr'."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration19_verify.py",
+    "/app/backend/tests/test_iteration19_units.py"
+  ],
+  "success_rate": {"backend": "100% (32/32 iteration-18 suites; 18/18 new iteration-19 suites; 125/125 combined serial run)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Ephemeral it19_*@qa.finaura.dev users registered per test class and removed in teardown via DELETE /api/financial/data + DELETE /api/auth/account. Memories/goals prefixed TEST_. No shared-account data left behind.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "testuser@finaura.dev / testpass123 (login 200); new tests use fresh @qa.finaura.dev registrations",
+  "context_for_next_testing_agent": "All four iteration-18 defects (bank single-Amount-column direction, conflicting-ref dedupe veto, generic-token overlap scoring, memory purge on DELETE /financial/data, cr/dr word-boundary mapping) are FIXED and covered by tests/test_iteration19_verify.py (API-level, isolated users) and tests/test_iteration19_units.py (matcher/parser units). Always run the iteration 14/15/16 suites serially (-n 0) or in isolation — they share testuser@finaura.dev and race under xdist, which is the only failure source seen this round. Known stale/unrelated: test_phase3.py Google OAuth toggle drift and test_iteration12.py METRO CARD RECHARGE categorization drift (not re-tested per request). Frontend not tested.",
+  "rca_of_the_issue": "No new defects. The only failures observed (test_iteration14::test_overview_dedupes_across_sources, test_iteration15::TestDoubleCount::test_possible_match_bank_row_behaviour) reproduce only under parallel execution: those modules authenticate as the same shared testuser and mutate that user's transaction ledger, so a concurrent worker's import/overview changes the row set the assertion inspects. Both pass deterministically with -n 0 and when run without the racing module — test isolation defect, not product behaviour."
+}

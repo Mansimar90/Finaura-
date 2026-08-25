@@ -1,0 +1,60 @@
+{
+  "summary": "Iteration 18 — backend-only validation of the four user-reported P0 fixes on Finaura AI via the live public API. New suites: /app/backend/tests/test_iteration18_p0.py (30 tests: strict CR/DR classification, UPI Sent/Received + Amount+Merchant direction, bank+UPI unified-ledger dedupe, /statements/verify verified_matches, demo purge on real upload + 409, DELETE /statements/{id} scoping/404/multi-tenant, DELETE /financial/data tenant isolation, resolve-duplicate 200/400/404/422, and regressions for /whatif/scenario|subscription|twin, goals CRUD+PATCH+reorder, auth register/login/me/logout/config, settings preferences+export) and test_iteration18_falsepositive.py (over-dedupe risk). Result: 28 passed / 4 failed. All FOUR reported bug fixes verify for the tested statement formats: DR/DEBIT/SENT -> Expense and CR/CREDIT/RECEIVED -> Income; UPI Amount+Merchant positive rows -> Expense (salary row still Income); the SWIGGY/778899001122 bank+UPI pair merges once (merged=1, expenses 8850 not 9300, verify score >= 0.85); demo rows are purged on the first real upload (has_demo_data=false, has_real_data=true, import-demo then 409); per-statement and global delete are correctly scoped with 404 on foreign/unknown ids. Also re-ran the prior suites (iteration 14/15/16/17): 73 passed / 1 failed (the known iteration-16 boundary test — see below, it is NOT stale, it exposes a real over-dedupe).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/statements/preview + /api/statements/parse (source=bank)",
+        "issue": "Debits are STILL classified as Income for the very common bank export that has a single unsigned 'Amount' column and no Debit/Credit and no Type column. Repro: CSV 'Date,Description,Amount' with rows '01/09/2025,SWIGGY ORDER BLR,450' and '02/09/2025,BIGBASKET GROCERY,2200' -> both parse as type='Income' (category 'Miscellaneous Credit'). statements.parse_csv only applies the 'default to Expense unless an income keyword matches' heuristic when source=='upi'; for source=='bank' it falls through to _detect_type(amount) which returns Income for any positive number. This is exactly user-reported bug #2 for that format. Test: tests/test_iteration18_p0.py::TestBankAmountOnlyClassification",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "statements._match_score / dedupe_across_sources -> GET /api/financial/overview",
+        "issue": "Over-aggressive auto-dedupe silently DELETES a legitimate expense from the ledger (undercounting). (a) Two DISTINCT payments to the same merchant, same amount, 2 days apart, where the bank narration carries UPI ref 111111111111 and the UPI row carries a different ref 222222222222, score 0.95 (0.6 + 0.05 date + 0.25 token overlap + 0.05 'upi') and the bank row is dropped. A CONFLICTING upi_ref between the two sides should veto the match, not be ignored. (b) A single generic shared token is enough for the full +0.25 overlap bonus: 'Paid Wwww Alpha' vs 'Paid Yyyy Beta' (same amount, 2-day gap, unrelated payees) scores 0.90 and one row is auto-deduped. This is also why tests/test_iteration16_dedupe_boundary.py::TestBoundaryApi::test_verified_pair_deduped_possible_pair_kept fails (verified=5, possible=0) — that test is NOT stale expectation drift; the matcher is now merging an unrelated pair. Suggested fix: (1) return 0 / heavy penalty when both sides have a upi_ref/txn_id and they differ; (2) scale the overlap bonus by Jaccard/number of matched distinctive tokens instead of a flat +0.25, and ignore generic verbs (paid, sent, received, to, from, order, payment). Tests: tests/test_iteration18_falsepositive.py",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "DELETE /api/financial/data",
+        "issue": "Does not clear finaura_memories. Requirement says the wipe must remove transactions + goals + memories + statements. Repro: POST /api/memories {category:'income',key:'TEST_key',value:'x'} -> DELETE /api/financial/data -> GET /api/memories still returns the memory (it also still shows up in /api/settings/export). Add `await db.finaura_memories.delete_many({'user_id': uid})` in server.py delete_data(). Test: tests/test_iteration18_p0.py::TestDeleteDataMemories"
+      },
+      {
+        "endpoint": "statements._auto_map_columns",
+        "issue": "The 'cr' fallback for the credit column matches the substring inside 'Description' (des-CR-iption), so a CSV like 'Date,Description,Debit,Balance' guesses credit='Description'. Currently harmless because normalize_amount() on free text returns 0.0, but it is a latent mis-mapping (any description containing a bare number could be read as a credit). Match column names on word boundaries / exact tokens for the short aliases (cr, dr)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration18_p0.py",
+    "/app/backend/tests/test_iteration18_falsepositive.py",
+    "/app/test_reports/pytest/it18.xml"
+  ],
+  "action_items": [
+    "HIGH: apply the UPI 'default to Expense unless income keyword' heuristic (or require an explicit direction) to source=bank single-Amount-column statements so SWIGGY/BIGBASKET debits stop being Income.",
+    "HIGH: make _match_score veto a match when both sides carry different upi_ref/txn_id, and stop granting a flat +0.25 for a single generic shared token — otherwise unrelated same-amount rows within 3 days are silently deleted from the ledger.",
+    "MINOR: DELETE /api/financial/data should also delete finaura_memories.",
+    "MINOR: tighten _auto_map_columns short aliases ('cr','dr') to word-boundary matching."
+  ],
+  "critical_code_review_comments": [
+    "statements.py parse_csv: the direction heuristic is gated on `source == 'upi'`; bank statements without Debit/Credit/Type columns fall back to sign-based detection, which reintroduces the reported Income mis-classification.",
+    "statements.py _match_score: a mismatching upi_ref is currently ignored while a matching one adds +0.25 — asymmetric evidence handling causes false-positive auto-dedupe (data loss, not just a display bug).",
+    "server.py delete_data(): incomplete wipe (memories left behind) while /api/settings/export still exposes them.",
+    "statements.py is 785 lines and server.py 771 lines — both at the size limit; consider splitting parsing vs matching vs router."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration18_p0.py",
+    "/app/backend/tests/test_iteration18_falsepositive.py"
+  ],
+  "success_rate": {"backend": "88% (28/32 new tests; prior suites 73/74)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Ephemeral @qa.finaura.dev users (it18_*) created per test class and removed via DELETE /api/financial/data + DELETE /api/auth/account in teardown. Goals/memories prefixed TEST_.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "testuser@finaura.dev / testpass123 (login verified 200 in this run)",
+  "context_for_next_testing_agent": "The four P0 fixes are verified for statements that carry a direction signal (Debit/Credit columns, Type=DR/CR, UPI Sent/Received, or UPI Amount+Merchant): see tests/test_iteration18_p0.py. Two gaps remain: (1) bank CSVs with a single unsigned Amount column still classify debits as Income; (2) the dedupe matcher over-merges (conflicting upi_ref ignored, flat +0.25 for one generic shared token) — tests/test_iteration18_falsepositive.py plus test_iteration16_dedupe_boundary.py::TestBoundaryApi document it. Do not treat the iteration-16 boundary failure as stale. Frontend was intentionally not tested this round.",
+  "rca_of_the_issue": "Bug #2 residue: parse_csv gates the 'positive amount is outbound unless an income keyword matches' rule behind source=='upi'; for bank statements with only an Amount column _detect_type(amount>0) returns Income. Bug #1 residue (opposite direction): _match_score adds a flat +0.25 for any post-stopword token overlap and +0.05 for a <=2-day gap on top of the 0.6 amount+type+date base, so 0.90-0.95 is reachable by unrelated or genuinely distinct same-amount rows, and dedupe_across_sources then drops the bank side permanently at import/overview time; a differing upi_ref, which proves the two rows are different transactions, is not used as a negative signal."
+}
