@@ -455,10 +455,18 @@ def parse_pdf(content: bytes, source: str = "bank") -> tuple[list[dict], str, di
         raise HTTPException(status_code=503, detail="PDF parser not available on this server.") from exc
     transactions: list[dict] = []
     sample_snippet = ""
-    meta = {"pages_processed": 0, "tables_seen": 0, "text_fallback_used": False, "warnings": []}
+    meta = {"pages_processed": 0, "tables_seen": 0, "text_fallback_used": False,
+            "warnings": [], "full_text": ""}
     try:
         with pdfplumber.open(io.BytesIO(content)) as pdf:
             meta["pages_processed"] = len(pdf.pages)
+            # Grab the full text ONCE up front so we can extract declared totals
+            # from the statement header even if the header line was filtered out
+            # of the doc_lines used by the parser strategies.
+            try:
+                meta["full_text"] = "\n".join((p.extract_text() or "") for p in pdf.pages[:3])
+            except Exception:
+                pass
             # --- Strategy 1: proper table extraction ---
             for page in pdf.pages:
                 try:
@@ -939,6 +947,7 @@ def parse_pdf(content: bytes, source: str = "bank") -> tuple[list[dict], str, di
                         "type": txn_type,
                         "category": category,
                         "source": source,
+                        "balance": round(balance, 2),
                     }
                     if upi_ref_m:
                         txn["upi_ref"] = upi_ref_m.group(1)
@@ -1368,16 +1377,26 @@ def _strip_txn(t: dict) -> dict:
 
 
 def dedupe_across_sources(transactions: list[dict]) -> list[dict]:
-    """Return transactions with cross-source duplicates removed. Only VERIFIED matches
-    (score >= 0.85) are auto-deduped so we never silently drop an unrelated same-amount
-    payment that just happens to fall within 3 days. Possible matches (0.6-0.85) stay
-    in analytics and only surface in the /verify view for the user to review."""
+    """Return transactions with cross-source duplicates removed and the survivor
+    tagged with `unified_source: "both"`. Only VERIFIED matches (score >= 0.85)
+    are auto-deduped — possible matches stay in analytics and only surface in the
+    /verify view for the user to resolve. This is the single source of truth every
+    dashboard, master and overview endpoint reads from."""
     bank = [t for t in transactions if t.get("source", "bank") == "bank"]
     upi = [t for t in transactions if t.get("source") == "upi"]
+    # Tag every row with unified_source (defaults to its own source)
+    for t in transactions:
+        t["unified_source"] = t.get("source", "bank")
     if not upi:
         return transactions
     result = cross_verify(bank, upi)
     drop_bank_ids = set(result.get("verified_bank_ids") or [])
+    # The UPI survivors of a verified pair inherit the "both" tag.
+    matched_upi_ids = {m["upi_txn"].get("id") for m in result.get("verified_matches", [])
+                       if isinstance(m.get("upi_txn"), dict) and m["upi_txn"].get("id")}
+    for t in transactions:
+        if t.get("source") == "upi" and t.get("id") in matched_upi_ids:
+            t["unified_source"] = "both"
     return [t for t in transactions if not (t.get("source", "bank") == "bank" and t.get("id") in drop_bank_ids)]
 
 
@@ -1404,10 +1423,13 @@ def _find_verified_match(new_txn: dict, existing_other: list[dict]) -> dict | No
 # -------- Extraction summary helper --------
 
 def _extraction_summary(transactions: list[dict], pages_processed: int | None = None,
-                        warnings: list[str] | None = None, extra: dict | None = None) -> dict:
+                        warnings: list[str] | None = None, extra: dict | None = None,
+                        declared: dict | None = None,
+                        reconciliation: dict | None = None) -> dict:
     """Uniform summary the frontend shows on the Review step BEFORE import.
-    Includes counts by direction, needs-review count, and warnings so the user
-    can spot 'only 2 rows out of a 6-month statement' before saving."""
+    Includes counts by direction, needs-review, declared-vs-parsed cross-check,
+    running-balance reconciliation, and warnings so the user catches an
+    incomplete extraction ('2 rows out of a 6-month statement') before saving."""
     credits = sum(1 for t in transactions if (t.get("type") or "").lower() == "income")
     debits = sum(1 for t in transactions if (t.get("type") or "").lower() == "expense")
     credit_total = sum(float(t.get("amount") or 0) for t in transactions if (t.get("type") or "").lower() == "income")
@@ -1417,6 +1439,54 @@ def _extraction_summary(transactions: list[dict], pages_processed: int | None = 
                        or not (t.get("description") or "").strip()
                        or (len((t.get("description") or "").strip()) < 4))
     warns = list(warnings or [])
+    verification_pass = True
+    verification: dict = {}
+    # Declared-totals cross-check (only for UPI PDFs that carry them in header)
+    if declared:
+        verification["declared"] = declared
+        d_deb = declared.get("declared_debits")
+        d_cred = declared.get("declared_credits")
+        if isinstance(d_deb, (int, float)) and d_deb > 0:
+            delta = abs(debit_total - d_deb) / d_deb * 100
+            verification["debit_delta_pct"] = round(delta, 2)
+            if delta > 1.0:
+                verification_pass = False
+                warns.append(
+                    f"Parsed debits ₹{debit_total:,.2f} differ from statement's "
+                    f"declared ₹{d_deb:,.2f} by {delta:.1f}% — review the file for missed pages."
+                )
+        if isinstance(d_cred, (int, float)) and d_cred > 0:
+            delta = abs(credit_total - d_cred) / d_cred * 100
+            verification["credit_delta_pct"] = round(delta, 2)
+            if delta > 1.0:
+                verification_pass = False
+                warns.append(
+                    f"Parsed credits ₹{credit_total:,.2f} differ from statement's "
+                    f"declared ₹{d_cred:,.2f} by {delta:.1f}% — review the file for missed pages."
+                )
+        d_deb_count = declared.get("declared_debit_count")
+        d_cred_count = declared.get("declared_credit_count")
+        if isinstance(d_deb_count, int) and d_deb_count > 0 and debits < d_deb_count * 0.95:
+            verification_pass = False
+            warns.append(
+                f"Statement declares {d_deb_count} debit rows but we parsed only {debits}. "
+                "The file may be truncated or a layout branch is missing."
+            )
+        if isinstance(d_cred_count, int) and d_cred_count > 0 and credits < d_cred_count * 0.95:
+            verification_pass = False
+            warns.append(
+                f"Statement declares {d_cred_count} credit rows but we parsed only {credits}."
+            )
+    # Balance-reconciliation for bank statements (rows with `balance` field)
+    if reconciliation and reconciliation.get("checked", 0) > 0:
+        verification["reconciliation"] = reconciliation
+        if not reconciliation.get("ok"):
+            verification_pass = False
+            warns.append(
+                f"Running-balance check failed on {reconciliation['mismatches']} of "
+                f"{reconciliation['checked']} rows (max delta ₹{reconciliation['max_delta']:.2f}). "
+                "One or more transactions look mis-classified — review before importing."
+            )
     if not transactions:
         warns.append("No transactions were detected. Check the column mapping (CSV/Excel) or export a fresh CSV from your bank if this is a scanned PDF.")
     summary = {
@@ -1427,12 +1497,101 @@ def _extraction_summary(transactions: list[dict], pages_processed: int | None = 
         "debits_total": round(debit_total, 2),
         "needs_review": needs_review,
         "warnings": warns,
+        "verification_pass": verification_pass,
     }
     if pages_processed is not None:
         summary["pages_processed"] = pages_processed
+    if verification:
+        summary["verification"] = verification
     if extra:
         summary.update(extra)
     return summary
+
+
+# -------- Statement-level verification helpers --------
+
+def _extract_declared_totals(pdf_full_text: str) -> dict:
+    """Extract the totals a statement PROMISES to contain (from its header line):
+    * Paytm: '25 FEB'26 - 24 AUG'26 - Rs.229,528.15 + Rs.93,328'
+             + 'NN Payments made MM Payments received'
+    * GPay:  '01February2026-31July2026 ₹71,148.02 ₹78,791'
+    So we can cross-check parsed totals against the statement's own stated totals
+    and warn when they diverge > 1 %. Returns {} when no pattern matches."""
+    if not pdf_full_text:
+        return {}
+    out: dict = {}
+    # Paytm period + totals: "25 FEB'26 - 24 AUG'26 - Rs.229,528.15 + Rs.93,328"
+    # Allow an optional numeric day prefix on both sides of the date range.
+    m = re.search(
+        r"(?:\d{1,2}\s+)?[A-Za-z]{3,9}\W?'?\d{2,4}\s*[-\u2013\u2014]\s*"
+        r"(?:\d{1,2}\s+)?[A-Za-z]{3,9}\W?'?\d{2,4}\s+"
+        r"[-\u2212]\s*Rs\.?\s*([\d,]+(?:\.\d{1,2})?)\s+"
+        r"\+\s*Rs\.?\s*([\d,]+(?:\.\d{1,2})?)",
+        pdf_full_text,
+    )
+    if m:
+        out["declared_debits"] = round(normalize_amount(m.group(1)), 2)
+        out["declared_credits"] = round(normalize_amount(m.group(2)), 2)
+        out["source_hint"] = "paytm"
+    # GPay period + totals: "<Period> ₹NN ₹NN"
+    if not out:
+        m = re.search(
+            r"\d{1,2}[A-Za-z]{3,9}\d{4}\s*[-\u2013]\s*\d{1,2}[A-Za-z]{3,9}\d{4}\s+"
+            r"[₹]\s*([\d,]+(?:\.\d{1,2})?)\s+[₹]\s*([\d,]+(?:\.\d{1,2})?)",
+            pdf_full_text,
+        )
+        if m:
+            out["declared_debits"] = round(normalize_amount(m.group(1)), 2)
+            out["declared_credits"] = round(normalize_amount(m.group(2)), 2)
+            out["source_hint"] = "gpay"
+    # NN Payments made MM Payments received (Paytm & similar)
+    m2 = re.search(
+        r"(\d{1,5})\s+Payments?\s+made\s+(\d{1,5})\s+Payments?\s+received",
+        pdf_full_text, re.IGNORECASE,
+    )
+    if m2:
+        out["declared_debit_count"] = int(m2.group(1))
+        out["declared_credit_count"] = int(m2.group(2))
+    return out
+
+
+def _reconcile_balance(transactions: list[dict]) -> dict:
+    """Bank-statement running-balance verifier:
+        prev_balance + credit - debit == new_balance (within 1 paise)
+    Only checks rows that carry a `balance` field. Returns a small report the
+    UI can surface — checked, mismatches, ok, max_delta.
+    """
+    checked = 0
+    mismatches = 0
+    max_delta = 0.0
+    prev: float | None = None
+    for t in transactions:
+        bal = t.get("balance")
+        if bal is None:
+            continue
+        try:
+            bal_f = float(bal)
+        except (TypeError, ValueError):
+            continue
+        if prev is None:
+            prev = bal_f
+            continue
+        checked += 1
+        credit = float(t.get("amount") or 0) if t.get("type") == "Income" else 0.0
+        debit = float(t.get("amount") or 0) if t.get("type") == "Expense" else 0.0
+        expected = round(prev + credit - debit, 2)
+        delta = round(abs(expected - bal_f), 2)
+        if delta > 0.01:
+            mismatches += 1
+            if delta > max_delta:
+                max_delta = delta
+        prev = bal_f
+    return {
+        "checked": checked,
+        "mismatches": mismatches,
+        "ok": checked > 0 and mismatches == 0,
+        "max_delta": max_delta,
+    }
 
 
 def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
@@ -1473,10 +1632,13 @@ def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
             return {"kind": "excel", "source": source, **info}
         if name.endswith(".pdf") or (file.content_type or "") == "application/pdf":
             transactions, sample, meta = parse_pdf(raw, source=source)
+            declared = _extract_declared_totals(meta.get("full_text") or "")
+            recon = _reconcile_balance(transactions) if source == "bank" else None
             summary = _extraction_summary(transactions, pages_processed=meta.get("pages_processed"),
                                           warnings=meta.get("warnings"),
                                           extra={"tables_seen": meta.get("tables_seen"),
-                                                 "text_fallback_used": meta.get("text_fallback_used")})
+                                                 "text_fallback_used": meta.get("text_fallback_used")},
+                                          declared=declared, reconciliation=recon)
             return {"kind": "pdf", "source": source, "transactions": transactions,
                     "sample_lines": sample, "extraction_summary": summary}
         raise HTTPException(status_code=415, detail="Unsupported file. Please upload CSV, Excel, or PDF.")
@@ -1525,12 +1687,15 @@ def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
                     "extraction_summary": _extraction_summary(txns)}
         if name.endswith(".pdf"):
             transactions, _sample, meta = parse_pdf(raw, source=source)
+            declared = _extract_declared_totals(meta.get("full_text") or "")
+            recon = _reconcile_balance(transactions) if source == "bank" else None
             return {"transactions": transactions, "source": source,
                     "extraction_summary": _extraction_summary(transactions,
                                                               pages_processed=meta.get("pages_processed"),
                                                               warnings=meta.get("warnings"),
                                                               extra={"tables_seen": meta.get("tables_seen"),
-                                                                     "text_fallback_used": meta.get("text_fallback_used")})}
+                                                                     "text_fallback_used": meta.get("text_fallback_used")},
+                                                              declared=declared, reconciliation=recon)}
         raise HTTPException(status_code=415, detail="Unsupported file.")
 
     @router.post("/ai-review")
@@ -1681,10 +1846,10 @@ def build_statements_router(db: AsyncIOMotorDatabase, get_current_user):
         master_list = dedupe_across_sources(all_txns)
         income_sum = sum(float(t.get("amount") or 0) for t in master_list if t.get("type") == "Income")
         expense_sum = sum(float(t.get("amount") or 0) for t in master_list if t.get("type") == "Expense")
-        # By source (post-dedupe) so the dashboard can show Bank vs UPI without double counting
+        # By source (post-dedupe) so the dashboard can show Bank vs UPI vs Both without double counting
         by_source: dict = {}
         for t in master_list:
-            src = t.get("source", "bank")
+            src = t.get("unified_source") or t.get("source", "bank")
             e = by_source.setdefault(src, {"count": 0, "income": 0.0, "expense": 0.0})
             e["count"] += 1
             if t.get("type") == "Income":
